@@ -1,0 +1,283 @@
+---
+title: "Mg analysis"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+**Read in Data**
+
+```{r}
+DF <-read.csv("Year1_Master.csv", header=T)
+```
+
+**Clean Data**
+
+```{r}
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+
+
+```
+
+```{r}
+
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+#unique(DF$Date)
+#str(DF)
+```
+
+Assumption Tests
+
+```{r}
+outliers_df <- DF %>% identify_outliers(Mg)
+DF <- DF %>% anti_join(outliers_df, by = "Mg")
+
+normality_test <- DF %>% shapiro_test(Mg)
+normality_test
+
+ggqqplot(DF, x = "Mg", title = "QQ Plot of Mg")
+
+```
+
+Mixed Effects Model
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+model_scaled <- lmer(Mg ~ Treatment * Date_scaled + (1 | Site) + (1 | Block), data = DF)
+
+summary(model_scaled)
+
+normality_test <- shapiro.test(resid(model_scaled))
+normality_test
+#plot(model_scaled)
+
+
+emm <- emmeans::emmeans(model_scaled, pairwise ~ Treatment, adjust = "tukey")
+
+Mgpairs <- emm$contrasts
+print(Mgpairs)
+
+Mgpairs_summary <- summary(Mgpairs)
+
+Mgpairs_summary <- summary(Mgpairs)
+
+# Extract p-values from the summary
+p_values <- Mgpairs_summary$p.value
+
+# Assign names to the p-values based on the contrast labels
+names(p_values) <- Mgpairs_summary$contrast
+
+# Use multcompView to create the compact letter display
+letters <- multcompView::multcompLetters(p_values, threshold = 0.05)
+
+# Print the letter display
+print(letters)
+
+print(Mgpairs)
+
+
+# Assuming letters contains your multcomp results
+letters <- multcompView::multcompLetters(p_values, threshold = 0.05)
+
+# View the original letter output
+print(letters)
+
+# Replace the letter display with a more meaningful custom label
+letters$`Letters` <- gsub("a", "Group 1", letters$`Letters`)
+letters$`Letters` <- gsub("b", "Group 2", letters$`Letters`)
+letters$`Letters` <- gsub("c", "Group 3", letters$`Letters`)
+letters$`Letters` <- gsub("d", "Group 4", letters$`Letters`)
+
+# Now print the updated output
+print(letters)
+
+# Assuming 'letters' contains the letter results and 'Mgpairs_summary' contains the contrasts
+
+# Create a data frame of treatments and their corresponding groups
+treatment_groups <- data.frame(
+  treatment = names(letters$Letters),
+  group = letters$Letters
+)
+
+# Merge treatment groups with the contrasts to remove repetition
+merged_results <- merge(Mgpairs_summary, treatment_groups, by.x = "contrast", by.y = "treatment")
+
+# View the final results
+print(merged_results)
+
+cld(emm,adjust="tukey")
+
+```
+
+DATA ANALYSIS Mg
+
+```{r}
+df.summaryMg <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(Mg, na.rm = TRUE),
+    se=(sd/(sqrt(length(Mg)))),
+    #se.1=std.error(Mg), 
+    Mgmean = mean(Mg, na.rm = TRUE)
+    )
+# df.summaryMg
+
+#Mg1<-lm(Mg~Treatment+Block+Site+Date,data=DF)
+#summary(Mg1)
+
+#Mg2<-aov(Mg1)
+summary(Mg2)
+
+tukey.testMg<-HSD.test(Mg2,trt="Treatment")
+tukey.testMg
+
+
+```
+
+Data Visualization Mg
+
+```{r}
+MgTime<-ggplot(df.summaryMg, aes(Date, Mgmean, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summaryMg) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = Mgmean-se, ymax = Mgmean+se), data = df.summaryMg, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("Mg (mg/L)")
+
+
+
+
+MgSum<-ggplot(df.summaryMg, aes(x = Treatment, y = Mgmean, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average Mg (mg/L)",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(MgTime)
+print(MgSum)
+
+ggsave("MgTime.png", plot = MgTime, width = 8, height = 5, dpi = 300)
+ggsave("MgBoxSum.png", plot = MgSum, width = 8, height = 5, dpi = 300)
+```
+
+Experiment with Repeated ANOVA
+
+```{r}
+model_scaledexp <- lmer(Mg ~ Treatment * Date_scaled + (Site|Block), data = DF)
+
+summary(model_scaledexp)
+
+#plot(model_scaled)
+
+
+emm2 <- emmeans::emmeans(model_scaledexp, pairwise ~ Treatment, adjust = "tukey")
+
+Mgpairs2 <- emm2$contrasts
+print(Mgpairs2)
+
+Mgpairs_summary <- summary(Mgpairs2)
+
+Mgpairs_summary <- summary(Mgpairs2)
+
+anova(model_scaledexp)
+
+```
+
+FLUX Analysis
+
+```{r}
+library("pracma")
+DF$Time <- as.numeric(DF$Date- min(DF$Date)) 
+
+
+
+df_integral <- DF %>%
+  drop_na(Mg, Time) %>%
+  group_by(Block,Treatment) %>%
+  filter(n() >= 2) %>%
+  group_modify(~ {
+    tibble(
+      Total_Mg= trapz(.x$Time, .x$Mg),
+      Points_Used = nrow(.x)
+    )
+  })
+
+library(lme4)
+model <- lmer(Total_Mg ~ Treatment + (1|Block), data = df_integral)
+anova(model)
+
+#Use this code for all flux 
+emflux <- emmeans::emmeans(model, pairwise ~ Treatment, adjust = "tukey")
+
+cld(emflux, adjust="tukey")
+
+MgFlux<-ggplot(df_integral, aes(Treatment, Total_Mg)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  labs(y = "Total Magnesium Flux (mg/L × days)",
+       title = paste("Treatment Effects (F =", round(anova(model)$"F value"[1], 2), ")")) +
+  theme_minimal()
+print(MgFlux)
+  ggsave("MgFlux.png", plot = MgFlux, width = 8, height = 5, dpi = 300)
+
+```

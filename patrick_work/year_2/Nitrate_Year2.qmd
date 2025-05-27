@@ -1,0 +1,320 @@
+---
+title: "Nitrate"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+#install.packages("pracma")
+library(pracma)
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+**Read in Data**
+
+```{r}
+DF <-read.csv("Year2_Master.csv", header=T)
+```
+
+**Clean Data**
+
+```{r}
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+
+
+```
+
+```{r}
+
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+                      
+#unique(DF$Date)
+#str(DF)
+```
+
+Assumption Tests
+
+```{r}
+#outliers_df <- DF %>% identify_outliers(Nitrate)
+#DF <- DF %>% anti_join(outliers_df, by = "Nitrate")
+
+#normality_test <- DF %>% shapiro_test(Nitrate)
+#normality_test
+
+#ggqqplot(DF, x = "Nitrate", title = "QQ Plot of Nitrate")
+
+```
+
+Mixed Effects Model
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+model_scaled <- lmer(Nitrate ~ Treatment * Date_scaled + (1 | Site) + (1 | Block), data = DF)
+# how to nest block in site (Site|Block) add in equation
+summary(model_scaled)
+
+#plot(model_scaled)
+
+
+emm <- emmeans::emmeans(model_scaled, pairwise ~ Treatment, adjust = "tukey")
+
+Nitratepairs <- emm$contrasts
+print(Nitratepairs)
+
+Nitratepairs_summary <- summary(Nitratepairs)
+
+Nitratepairs_summary <- summary(Nitratepairs)
+
+# Extract p-values from the summary
+p_values <- Nitratepairs_summary$p.value
+
+# Assign names to the p-values based on the contrast labels
+names(p_values) <- Nitratepairs_summary$contrast
+
+# Use multcompView to create the compact letter display
+letters <- multcompView::multcompLetters(p_values, threshold = 0.05)
+
+# Print the letter display
+print(letters)
+
+print(Nitratepairs)
+
+```
+
+DATA ANALYSIS N
+
+```{r}
+df.summaryNitrate <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(Nitrate, na.rm = TRUE),
+    se=(sd/(sqrt(length(Nitrate)))),
+    #se.1=std.error(Mg), 
+    Nitratemean = mean(Nitrate, na.rm = TRUE)
+    )
+df.summaryNitrate
+
+Nitrate1<-lm(Nitrate~Treatment+Block+Site+Date,data=DF)
+summary(Nitrate1)
+
+Nitrate2<-aov(Nitrate1)
+summary(Nitrate2)
+
+tukey.testNitrate<-HSD.test(Nitrate2,trt="Treatment")
+tukey.testNitrate
+
+
+```
+
+Data Visualization Nitrate
+
+```{r}
+NitTime<-ggplot(df.summaryNitrate, aes(Date, Nitratemean, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summaryNitrate) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = Nitratemean-se, ymax = Nitratemean+se), data = df.summaryNitrate, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("Nitrate (mg/L)")
+
+
+
+
+NitSum<-ggplot(df.summaryNitrate, aes(x = Treatment, y = Nitratemean, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average NO3 (mg/L)",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  ggsave("NitTime.png", plot = NitTime, width = 8, height = 5, dpi = 300)
+  ggsave("NitSum.png", plot = NitSum, width = 8, height = 5, dpi = 300)
+
+print(NitSum)
+print(NitTime)
+
+
+
+```
+
+Integrating under the Curve for Flux
+
+```{r}
+library("pracma")
+DF$Time <- as.numeric(DF$Date- min(DF$Date)) 
+
+
+
+df_integral <- DF %>%
+  drop_na(Nitrate, Time) %>%
+  group_by(Block,Treatment) %>%
+  filter(n() >= 2) %>%
+  group_modify(~ {
+    tibble(
+      Total_Nitrate = trapz(.x$Time, .x$Nitrate),
+      Points_Used = nrow(.x)
+    )
+  })
+
+library(lme4)
+model <- lmer(Total_Nitrate ~ Treatment + (1|Block), data = df_integral)
+anova(model)
+
+
+NitFlux<-ggplot(df_integral, aes(Treatment, Total_Nitrate)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  labs(y = "Total Nitrate Flux (mg/L × days)",
+       title = paste("Treatment Effects (F =", round(anova(model)$"F value"[1], 2), ")")) +
+  theme_minimal()
+
+  ggsave("NitFlux.png", plot = NitFlux, width = 8, height = 5, dpi = 300)
+
+print(NitFlux)
+
+```
+
+Trying to Make a Graph with Statistical Significance showed
+
+```{r}
+library(ggpubr)
+library(rstatix)
+
+df_integral <- data.frame(
+  Treatment = df_integral$Treatment,  # Explicitly reference column
+  Total_Nitrate = df_integral$Total_Nitrate,
+  Block = df_integral$Block  # Include other columns as needed
+)
+
+
+
+# Parametric (t-tests with adjusted p-values)
+pairwise_results <- df_integral %>%
+  t_test(Total_Nitrate ~ Treatment, p.adjust.method = "BH") %>%
+  add_xy_position(x = "Treatment")
+
+# Non-parametric alternative (if needed)
+wilcox_results <- df_integral %>%
+  wilcox_test(Total_Nitrate ~ Treatment, p.adjust.method = "BH")
+
+ggplot(df_integral, aes(Treatment, Total_Nitrate)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, show.legend = FALSE) +
+  stat_pvalue_manual(
+    pairwise_results,
+    label = "p.adj", 
+    tip.length = 0.01,
+    step.increase = 0.1
+  ) +
+  labs(
+    y = "Total Nitrate Flux (mg/L × days)",
+    title = "Pairwise Treatment Comparisons"
+  ) +
+  theme_minimal()
+```
+
+Checking Stats at each sampling Date
+
+Graphs:
+
+```{r}
+
+library(multcompView)
+for (current_date in unique(DF$Date_Formatted)) {
+  
+  cat("=====================================\n")
+  cat("Date:", current_date, "\n")
+  cat("=====================================\n")
+  
+  # Subset the data for the current date
+  df_subset <- DF %>% filter(Date_Formatted == current_date)
+  
+  # Fit the model
+  model <- lmer(Nitrate ~ Treatment + (1 | Site) + (1 | Block), data = df_subset)
+  print(summary(model))
+  
+  # Pairwise comparisons using emmeans
+  emm <- emmeans(model, pairwise ~ Treatment, adjust = "tukey")
+  Npairs_summary <- summary(emm$contrasts)
+  print(Npairs_summary)
+  
+  # Extract p-values and apply multcomp letters
+  p_values <- Npairs_summary$p.value
+  names(p_values) <- Npairs_summary$contrast
+  letters <- multcompLetters(p_values, threshold = 0.05)
+  
+  # Print compact letter display
+  print(letters$Letters)
+}
+
+
+
+```
+
+```{r}
+for (current_date in unique(DF$Date_Formatted)) {
+  p <- ggplot(DF %>% filter(Date_Formatted == current_date),
+              aes(x = Treatment, y = Nitrate)) +
+    geom_boxplot(fill = "lightblue", color = "darkblue") +
+    labs(title = paste("Nitrate by Treatment on", current_date),
+         x = "Treatment", y = "NO3") +
+    theme_minimal()
+  
+  print(p)
+}
+```

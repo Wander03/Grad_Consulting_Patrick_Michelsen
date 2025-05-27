@@ -1,0 +1,182 @@
+---
+title: "NH4_Year2(NotBroken)"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+Clean Read
+
+```{r}
+DF <-read.csv("Year2_Master.csv", header=T)
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$NH4[DF$NH4<0]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF <- DF[!is.na(DF$NH4), ]
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+           
+```
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+NH4_model <- lmer(NH4 ~ Treatment * Date_scaled * Site + (1 |Site:Block), data = DF)
+anova(NH4_model, type = 3)
+
+em <- emmeans::emmeans(NH4_model, pairwise ~ Treatment, adjust = "tukey")
+cld(em$emmeans, adjust="tukey")
+
+#Model Diagnostics 
+
+shapiro.test(resid(NH4_model))
+
+qqnorm(resid(NH4_model))
+qqline(resid(NH4_model),col="red",lwd=2)
+
+
+df_res <- data.frame(
+  Fitted = fitted(NH4_model),
+  Residuals = resid(NH4_model)
+)
+
+ggplot(df_res, aes(x = Fitted, y = Residuals)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  labs(title = "Residuals vs Fitted", x = "Fitted values", y = "Residuals") +
+  theme_minimal()
+```
+
+Data Visualization NH4
+
+```{r}
+df.summaryNH4 <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(NH4, na.rm = TRUE),
+    se=(sd/(sqrt(length(NH4)))),
+    #se.1=std.error(Mg), 
+    NH4 = mean(NH4, na.rm = TRUE)
+    )
+df.summaryNH4
+
+NH4Time<-ggplot(df.summaryNH4, aes(Date, NH4, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summaryNH4) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = NH4-se, ymax = NH4+se), data = df.summaryNH4, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("NH4 (mg/L)")
+
+
+NH4Sum<-ggplot(df.summaryNH4, aes(x = Treatment, y = NH4, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average NH4 (mg/L)",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("NH4Time.png", plot = NH4Time, width = 8, height = 5, dpi = 300)
+ggsave("NH4Sum.png", plot = NH4Sum, width = 8, height = 5, dpi = 300)
+
+print(NH4Sum)
+print(NH4Time)
+
+```
+
+FLUX Analysis
+
+```{r}
+library("pracma")
+DF$Time <- as.numeric(DF$Date- min(DF$Date)) 
+
+
+
+df_integral <- DF %>%
+  drop_na(NH4, Time) %>%
+  group_by(Block,Treatment,Site) %>%
+  filter(n() >= 2) %>%
+  group_modify(~ {
+    tibble(
+      Total_NH4= trapz(.x$Time, .x$NH4),
+      Points_Used = nrow(.x)
+    )
+  })
+
+library(lme4)
+model <- lmer(Total_NH4 ~ Treatment + (1|Site:Block), data = df_integral)
+anova(model)
+
+
+NH4Flux<-ggplot(df_integral, aes(Treatment, Total_NH4)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  labs(y = "Total NH4 Flux (mg/L × days)",
+       title = paste("Treatment Effects (F =", round(anova(model)$"F value"[1], 2), ")")) +
+  theme_minimal()
+
+ggsave("NH4Flux.png", plot = NH4Flux, width = 8, height = 5, dpi = 300)
+
+print(NH4Flux)
+
+```

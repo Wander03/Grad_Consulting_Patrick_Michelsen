@@ -1,0 +1,255 @@
+---
+title: "EC"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+**Read in Data**
+
+```{r}
+DF <-read.csv("Year2_Master.csv", header=T)
+```
+
+**Clean Data**
+
+```{r}
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+
+
+```
+
+```{r}
+
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+                      
+#unique(DF$Date)
+#str(DF)
+```
+
+Checking Site By Treatment Interaction
+
+```{r}
+library(lmerTest)
+Sitemodel<- lmer(EC ~ Treatment * Site + (1 | Block), data = DF)
+
+anova(Sitemodel, type = 3)
+```
+
+Mixed Effects Model
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+model_scaled <- lmer(EC ~ Treatment * Date_scaled + (1 | Site) + (1 | Block), data = DF)
+
+summary(model_scaled)
+
+#plot(model_scaled)
+
+
+emm <- emmeans::emmeans(model_scaled, pairwise ~ Treatment, adjust = "tukey")
+
+ECpairs <- emm$contrasts
+print(ECpairs)
+
+
+ECpairs_summary <- summary(ECpairs)
+
+# Extract p-values from the summary
+p_values <- ECpairs_summary$p.value
+
+# Assign names to the p-values based on the contrast labels
+names(p_values) <- ECpairs_summary$contrast
+
+# Use multcompView to create the compact letter display
+letters <- multcompView::multcompLetters(p_values, threshold = 0.05)
+
+# Print the letter display
+print(letters)
+
+print(ECpairs)
+
+```
+
+Data Analysis EC
+
+```{r}
+df.summaryEC <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(EC, na.rm = TRUE),
+    se=(sd/(sqrt(length(EC)))),
+    #se.1=std.error(Mg), 
+    EC = mean(EC, na.rm = TRUE)
+    )
+df.summaryEC
+
+EC1<-lm(EC~Treatment+Block+Site+Date,data=DF)
+summary(EC1)
+
+EC2<-aov(EC1)
+summary(EC2)
+
+tukey.testEC<-HSD.test(EC2,trt="Treatment")
+tukey.testEC
+```
+
+Data Visualization EC
+
+```{r}
+ECtime<-ggplot(df.summaryEC, aes(Date, EC, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summaryEC) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = EC-se, ymax = EC+se), data = df.summaryEC, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("EC (mS/cm)")
+
+ECsum<-ggplot(df.summaryEC, aes(x = Treatment, y = EC, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average EC (mS/cm)",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("ECtime.png", plot = ECtime, width = 8, height = 5, dpi = 300)
+  ggsave("ECsum.png", plot = ECsum, width = 8, height = 5, dpi = 300)
+
+  print(ECsum)
+print(ECtime)
+
+```
+
+FLUX Analysis
+
+```{r}
+library("pracma")
+DF$Time <- as.numeric(DF$Date- min(DF$Date)) 
+
+
+
+df_integral <- DF %>%
+  drop_na(EC, Time) %>%
+  group_by(Block,Treatment) %>%
+  filter(n() >= 2) %>%
+  group_modify(~ {
+    tibble(
+      Total_EC= trapz(.x$Time, .x$EC),
+      Points_Used = nrow(.x)
+    )
+  })
+
+library(lme4)
+model <- lmer(Total_EC ~ Treatment + (1|Block), data = df_integral)
+anova(model)
+
+
+ECflux<-ggplot(df_integral, aes(Treatment, Total_EC)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  labs(y = "Total EC Flux (mg/L × days)",
+       title = paste("Treatment Effects (F =", round(anova(model)$"F value"[1], 2), ")")) +
+  theme_minimal()
+
+ggsave("ECfluc.png", plot = ECflux, width = 8, height = 5, dpi = 300)
+
+print(ECflux)
+
+```
+
+Flux Stats analysis
+
+```{r}
+library(ggpubr)
+library(rstatix)
+
+df_integral <- data.frame(
+  Treatment = df_integral$Treatment,  # Explicitly reference column
+  Total_EC = df_integral$Total_EC,
+  Block = df_integral$Block  # Include other columns as needed
+)
+
+
+
+# Parametric (t-tests with adjusted p-values)
+pairwise_results <- df_integral %>%
+  t_test(Total_EC ~ Treatment, p.adjust.method = "BH") %>%
+  add_xy_position(x = "Treatment")
+
+# Non-parametric alternative (if needed)
+wilcox_results <- df_integral %>%
+  wilcox_test(Total_EC ~ Treatment, p.adjust.method = "BH")
+
+ggplot(df_integral, aes(Treatment, Total_EC)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, show.legend = FALSE) +
+  stat_pvalue_manual(
+    pairwise_results,
+    label = "p.adj", 
+    tip.length = 0.01,
+    step.increase = 0.1
+  ) +
+  labs(
+    y = "Total EC Flux (mg/L × days)",
+    title = "Pairwise Treatment Comparisons"
+  ) +
+  theme_minimal()
+```

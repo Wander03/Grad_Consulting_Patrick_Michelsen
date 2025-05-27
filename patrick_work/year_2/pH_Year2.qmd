@@ -1,0 +1,171 @@
+---
+title: "pH"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+**Read in Data**
+
+```{r}
+DF <-read.csv("Year2_Master.csv", header=T)
+```
+
+**Clean Data**
+
+```{r}
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+
+
+```
+
+```{r}
+
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+                      
+#unique(DF$Date)
+#str(DF)
+```
+
+Mixed Effects Model
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+model_scaled <- lmer(pH ~ Treatment * Date_scaled + (1 | Site) + (1 | Block), data = DF)
+
+summary(model_scaled)
+
+#plot(model_scaled)
+
+
+emm <- emmeans::emmeans(model_scaled, pairwise ~ Treatment, adjust = "tukey")
+
+pHpairs <- emm$contrasts
+print(pHpairs)
+
+
+pHpairs_summary <- summary(pHpairs)
+
+# Extract p-values from the summary
+p_values <- pHpairs_summary$p.value
+
+# Assign names to the p-values based on the contrast labels
+names(p_values) <- pHpairs_summary$contrast
+
+# Use multcompView to create the compact letter display
+letters <- multcompView::multcompLetters(p_values, threshold = 0.05)
+
+# Print the letter display
+print(letters)
+
+print(pHpairs)
+
+```
+
+Data Analysis pH
+
+```{r}
+df.summarypH <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(pH, na.rm = TRUE),
+    se=(sd/(sqrt(length(pH)))),
+    #se.1=std.error(Mg), 
+    pH = mean(pH, na.rm = TRUE)
+    )
+df.summarypH
+
+pH1<-lm(pH~Treatment+Block+Site+Date,data=DF)
+summary(pH1)
+
+pH2<-aov(pH1)
+summary(pH2)
+
+tukey.testpH<-HSD.test(pH2,trt="Treatment")
+tukey.testpH
+```
+
+Data Visualization pH
+
+```{r}
+pHtime<-ggplot(df.summarypH, aes(Date, pH, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summarypH) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = pH-se, ymax = pH+se), data = df.summarypH, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("pH")
+
+pHsum<-ggplot(df.summarypH, aes(x = Treatment, y = pH, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average pH",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("pHtime.png", plot = pHtime, width = 8, height = 5, dpi = 300)
+  ggsave("pHsum.png", plot = pHsum, width = 8, height = 5, dpi = 300)
+
+  print(pHtime)
+print(pHsum)
+
+```

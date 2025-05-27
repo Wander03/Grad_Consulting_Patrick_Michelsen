@@ -1,0 +1,197 @@
+---
+title: "Nitrate"
+format: html
+editor: visual
+---
+
+## Packages
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("dplyr")
+#install.packages("agricolae")
+#install.packages("plotrix")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+#install.packages("emmeans") 
+#install.packages("multcomp")
+#install.packages("pracma")
+library(pracma)
+library(multcomp)
+library(emmeans)   
+library(MASS)
+library(lme4)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(tidyverse)
+library(dbplyr)
+library(agricolae)
+```
+
+**Read in Data**
+
+```{r}
+DF <-read.csv("Combined_Master.csv", header=T)
+```
+
+**Clean Data**
+
+```{r}
+
+DF <- DF[, !(names(DF) %in% c("X", "X.1","X.2","X.3","X.4","X.5"))]
+
+DF$NH4[DF$NH4=="LOD"]<-0
+DF$Nitrate[DF$Nitrate=="LOD"]<-0
+DF$Mg[DF$Mg=="LOD"]<-0
+DF$P[DF$P=="LOD"]<-0
+
+DF$Nitrate[DF$Nitrate < 0] <- 0
+
+
+```
+
+```{r}
+
+DF <- DF %>%
+  mutate(id = row_number())
+
+DF$NH4  <- as.numeric(DF$NH4)  
+DF$Nitrate  <- as.numeric(DF$Nitrate)
+DF$Mg  <- as.numeric(DF$Mg)  
+DF$P  <- as.numeric(DF$P)
+DF$EC  <- as.numeric(DF$EC)
+DF$pH  <- as.numeric(DF$pH)
+
+DF$Treatment  <- as.factor(DF$Treatment) 
+DF$Block  <- as.factor(DF$Block) 
+DF$Site  <- as.factor(DF$Site) 
+DF$Study.Year  <- as.factor(DF$Study.Year)
+
+DF$Date <- as.Date(DF$Date, format = "%m_%d_%Y")
+
+DF$Date_Formatted <- format(DF$Date, "%m-%d-%Y")
+                      
+
+```
+
+Year by treatment Interaction to test if we can combine Years or not!
+
+```{r}
+library(lmerTest)
+Yearmodel <- lmer(Nitrate ~ Treatment * Study.Year + (1 |Site:Block), data = DF)
+anova(Yearmodel)
+
+Sitemodel<- lmer(Nitrate ~ Treatment * Site + (1 |Site:Block), data = DF)
+anova(Sitemodel)
+
+```
+
+Linear Mixed Effects Model
+
+```{r}
+DF$Date_scaled <- scale(as.numeric(DF$Date))
+
+N_model <- lmer(Nitrate ~ Treatment * Date_scaled * Site * Study.Year + (1 |Site:Block), data = DF)
+anova(N_model, type = 3)
+
+em <- emmeans::emmeans(N_model, pairwise ~ Treatment, adjust = "tukey")
+cld(em$emmeans, adjust="tukey")
+
+```
+
+```{r}
+library(ggplot2)
+
+# Extract slope (trend) of EC over time (Date_scaled) for each Treatment
+trend_estimates <- emtrends(N_model, ~ Treatment, var = "Date_scaled")
+summary(trend_estimates)
+emtrends(N_model, pairwise ~ Treatment, var = "Date_scaled")
+
+ggplot(DF, aes(x = Date_scaled, y = Nitrate, color = Treatment)) +
+  stat_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~ Site) +
+  labs(title = "Nitrate Trends Over Time by Treatment and Site")
+```
+
+Data Visualization Nitrate
+
+```{r}
+
+df.summaryNitrate <- DF %>%
+  group_by(Treatment, Date) %>%
+  summarize(
+    sd=sd(Nitrate, na.rm = TRUE),
+    se=(sd/(sqrt(length(Nitrate)))),
+    #se.1=std.error(Mg), 
+    Nitratemean = mean(Nitrate, na.rm = TRUE)
+    )
+df.summaryNitrate
+
+ggplot(df.summaryNitrate, aes(Date, Nitratemean, color = Treatment)) +
+  geom_jitter(position = position_jitter(0.2)) + 
+  geom_line(aes(group = Treatment),data = df.summaryNitrate) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
+  )+
+  geom_errorbar(aes(ymin = Nitratemean-se, ymax = Nitratemean+se), data = df.summaryNitrate, width = 0.2)+
+ 
+  theme(legend.position = "top")+
+  ylab("Nitrate (mg/L)")
+
+
+
+
+ggplot(df.summaryNitrate, aes(x = Treatment, y = Nitratemean, fill = Treatment)) + 
+  # Boxplot with customized whisker color
+  geom_boxplot(
+    outlier.shape = NA,   # Remove outliers from the plot
+    whisker.col = "blue", # Set whisker color (adjust as needed)
+    notch = FALSE         # Remove notches (optional)
+  ) +
+  labs(
+    x = "Treatment",
+    y = "Average NO3 (mg/L)",
+    fill = "Treatment"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+```
+
+Integrating under the Curve for Flux
+
+```{r}
+library("pracma")
+DF$Time <- as.numeric(DF$Date- min(DF$Date)) 
+
+
+
+df_integral <- DF %>%
+  drop_na(Nitrate, Time) %>%
+  group_by(Block,Treatment,Site,Study.Year) %>%
+  filter(n() >= 2) %>%
+  group_modify(~ {
+    tibble(
+      Total_Nitrate = trapz(.x$Time, .x$Nitrate),
+      Points_Used = nrow(.x)
+    )
+  })
+
+library(lme4)
+model <- lmer(Total_Nitrate ~ Treatment+Site + (1|Site:Block), data = df_integral)
+anova(model)
+  emflux <- emmeans::emmeans(model, pairwise ~ Treatment, adjust = "tukey")
+
+cld(emflux, adjust="tukey")
+
+ggplot(df_integral, aes(Treatment, Total_Nitrate)) +
+  geom_boxplot(aes(fill = Treatment), width = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  labs(y = "Total Nitrate Flux (mg/L × days)",
+       title = paste("Treatment Effects (F =", round(anova(model)$"F value"[1], 2), ")")) +
+  theme_minimal()
+```
