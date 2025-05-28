@@ -1,0 +1,117 @@
+---
+title: "EDA"
+author: "Andrew Kerr"
+format: html
+editor: source
+toc: true
+code-fold: true
+embed-resources: true
+---
+
+## Set-up
+
+```{r}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(writexl)
+library(patchwork)
+```
+
+## Data Read-in
+
+### Convert 3 .csv to 1 Excel File (DO NOT NEED TO RUN)
+
+```{r}
+#| message: false
+#| eval: false
+df_combined <- read_csv(here::here("data", "Combined_Master.csv")) %>% clean_names()
+df_year_1 <- read_csv(here::here("data", "Year1_Master.csv")) %>% clean_names()
+df_year_2 <- read_csv(here::here("data", "Year2_Master.csv")) %>% clean_names()
+
+# Change date format
+df_combined <- df_combined %>%
+  select(-bad_date) %>% # Remove unnecessary column
+  mutate(date = as.Date(date, format="%m_%d_%Y"))
+
+df_year_1 <- df_year_1 %>%
+  mutate(date = as.Date(date, format="%m_%d_%Y"))
+
+df_year_2 <- df_year_2 %>%
+  mutate(date = as.Date(date, format="%m_%d_%Y"))
+
+# Save as single Excel File
+out <- list("combined" = df_combined, "year_1" = df_year_1, "year_2" = df_year_2)
+write_xlsx(out, "data/Master.xlsx")
+```
+
+### Read-in Data from Excel File
+
+```{r}
+df_combined <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "combined")
+df_year_1 <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "year_1")
+df_year_2 <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "year_2")
+```
+
+## EDA
+
+### Create Datasets where LOD is 0 or NA
+
+```{r}
+#| warning: false
+response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
+
+df_combined_LOD_0 <- df_combined %>%
+    mutate(across(
+    all_of(response_vars), 
+    ~ {
+      # Replace "LOD" with 0
+      x <- ifelse(.x == "LOD", 0, .x)
+      as.numeric(x)
+    }
+  ))
+
+df_combined_LOD_NA <- df_combined %>%
+    mutate(across(
+    all_of(response_vars), 
+    ~ {
+      # Replace "LOD" with NA
+      x <- ifelse(.x == "LOD", NA, .x)
+      as.numeric(x)
+    }
+  ))
+```
+
+### Plot Response Variables Over Time
+
+```{r}
+#| warning: false
+#| fig.width: 14
+#| fig.height: 10
+
+plot_response <- function(r, data) {
+  data %>%
+    ggplot(aes(x = date, y = .data[[r]], color = sample_id)) +
+    facet_wrap(vars(study_year), scales = "free") +
+    geom_point() +
+    geom_line() +
+    theme_bw() +
+    theme(legend.position = "none") +
+    labs(
+      title = paste0(r, " Over Time"),
+      x = "Date"
+    )
+}
+  
+plots_1 <- map(response_vars, plot_response, data = df_combined_LOD_0)
+wrap_plots(plots_1, ncol = 2)
+
+plots_2 <- map(response_vars, plot_response, data = df_combined_LOD_NA)
+wrap_plots(plots_2, ncol = 2)
+```
+
+```{r}
+
+```
