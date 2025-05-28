@@ -18,6 +18,7 @@ library(janitor)
 library(readxl)
 library(writexl)
 library(patchwork)
+library(glmmTMB)
 ```
 
 ## Data Read-in
@@ -84,33 +85,99 @@ df_combined_LOD_NA <- df_combined %>%
   ))
 ```
 
+### Count of Zeros
+
+```{r}
+prop_zero_0 <- df_combined_LOD_0 %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x == 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = everything(), names_to = "response", values_to = "prop_zero")
+
+prop_zero_NA <- df_combined_LOD_NA %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x == 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = everything(), names_to = "response", values_to = "prop_zero")
+
+prop_zero_0 %>%
+  left_join(prop_zero_NA, by = "response", suffix = c("_0", "_NA")) %>%
+  arrange(-prop_zero_0)
+```
+
+### Concentration by Treatment Box Plots
+
+```{r}
+#| fig.width: 14
+#| fig.height: 10
+capwords <- function(s, strict = FALSE) {
+    cap <- function(s) paste(toupper(substring(s, 1, 1)),
+                  {s <- substring(s, 2); if(strict) tolower(s) else s},
+                             sep = "", collapse = " " )
+    sapply(strsplit(s, split = " "), cap, USE.NAMES = !is.null(names(s)))
+}
+
+plot_concentration <- function(r, data) {
+  data %>% 
+    filter(.data[[r]] > 0) %>%
+    ggplot(aes(x = treatment, y = .data[[r]], fill = treatment)) +
+      geom_boxplot(alpha = 0.7) +
+      geom_point(alpha = 0.3) +
+      facet_wrap(vars(study_year), scales = "free") +
+      labs(title = paste0(capwords(r), " Concentration (Non-Zero) by Treatment"), x = "Treatment", y = capwords(r)) +
+      theme_bw()
+}
+
+plots_0 <- map(response_vars, plot_concentration, data = df_combined_LOD_0)
+wrap_plots(plots_0, ncol = 2, guides = "collect")
+
+# It will be the same since we are plotting non-zeros
+# plots_NA <- map(response_vars, plot_concentration, data = df_combined_LOD_NA)
+# wrap_plots(plots_NA, ncol = 2, guides = "collect")
+```
+
+
 ### Plot Response Variables Over Time
 
 ```{r}
 #| warning: false
 #| fig.width: 14
 #| fig.height: 10
+capwords <- function(s, strict = FALSE) {
+    cap <- function(s) paste(toupper(substring(s, 1, 1)),
+                  {s <- substring(s, 2); if(strict) tolower(s) else s},
+                             sep = "", collapse = " " )
+    sapply(strsplit(s, split = " "), cap, USE.NAMES = !is.null(names(s)))
+}
 
-plot_response <- function(r, data) {
+plot_response <- function(r, data, by) {
   data %>%
-    ggplot(aes(x = date, y = .data[[r]], color = sample_id)) +
+    ggplot(aes(x = date, y = .data[[r]], color = .data[[by]])) +
     facet_wrap(vars(study_year), scales = "free") +
     geom_point() +
     geom_line() +
-    theme_bw() +
+    theme_bw(base_size = 12) +
     theme(legend.position = "none") +
     labs(
-      title = paste0(r, " Over Time"),
+      title = paste0(capwords(r), " Over Time"),
       x = "Date"
     )
 }
   
-plots_1 <- map(response_vars, plot_response, data = df_combined_LOD_0)
-wrap_plots(plots_1, ncol = 2)
+plots_0 <- map(response_vars, plot_response, data = df_combined_LOD_0, by = "sample_id")
+wrap_plots(plots_0, ncol = 2)
 
-plots_2 <- map(response_vars, plot_response, data = df_combined_LOD_NA)
-wrap_plots(plots_2, ncol = 2)
+plots_NA <- map(response_vars, plot_response, data = df_combined_LOD_NA, by = "sample_id")
+wrap_plots(plots_NA, ncol = 2)
 ```
+
+## Zero-Inflated Model
 
 ```{r}
 
