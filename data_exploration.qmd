@@ -20,6 +20,9 @@ library(writexl)
 library(patchwork)
 library(glmmTMB)
 library(car)
+library(emmeans)
+library(nlme)
+library(lmerTest)
 ```
 
 ## Data Read-in
@@ -230,104 +233,115 @@ plots_NA <- map(response_vars, plot_response, data = df_combined_LOD_NA, by = "s
 wrap_plots(plots_NA, ncol = 2)
 ```
 
-## Zero-Inflated Model
+## Models
 
-### With Random Effects
+### Responses with no Zeros
+
+#### EC
 
 ```{r}
-# Errors due to non-positive values (does not work with Gamma)
-# glmmTMB(
-#     p ~ treatment + site * study_year + sample_id + (1 | site/block) + (1 | sample_id),
-#     zi = ~ treatment + site + study_year,
-#     family = Gamma(link = "log"),
-#     data = df_combined_LOD_0
-# )
+fit_lmer <- lmer(
 
+  ec ~
+    factor(date)*treatment +
+    (1 | site:block) +
+    (1 | treatment:site:block),
+
+  data = df_combined_LOD_0 %>% filter(study_year == 1)
+  )
+
+Anova(fit_lmer)
+
+plot(fitted(fit_lmer), residuals(fit_lmer),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+```
+
+```{r}
+df_model <- df_combined_LOD_0 %>%
+  filter(study_year == 1) %>%
+  mutate(
+    date = factor(date),
+    treatment = factor(treatment),
+    site = factor(site),
+    block = factor(block),
+    
+    # Create combined grouping factors
+    site_block_id = interaction(site, block, drop = TRUE),
+    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
+  )
+
+fit_lme <- lme(
+  fixed = ec ~ date * treatment,
+  random = list(
+    site_block_id = ~ 1, # Random intercept for site:block combinations
+    trt_site_block_id = ~ 1 # Random intercept for treatment:site:block combinations
+  ),
+  data = df_model,
+  na.action = na.exclude
+)
+
+Anova(fit_lme)
+
+plot(fitted(fit_lme), residuals(fit_lme),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+```
+
+```{r}
+fit_glmer_gamma <- glmer(
+  ec ~ as.factor(date) * treatment +
+    (1 | site:block) +
+    (1 | treatment:site:block),
+  data = df_combined_LOD_0 %>% filter(study_year == 1),
+  family = Gamma(link = "log")
+)
+
+summary(fit_glmer_gamma)
+
+sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma, plot = TRUE)
+
+plot(fitted(fit_glmer_gamma), residuals(fit_glmer_gamma),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+```
+
+#### Ph
+
+```{r}
+fit_lme <- lme(
+  fixed = p_h ~ as.factor(date) * treatment,
+  random = list(
+    site_block_id = ~ 1, # Random intercept for site:block combinations
+    trt_site_block_id = ~ 1 # Random intercept for treatment:site:block combinations
+  ),
+  data = df_model,
+  na.action = na.exclude
+)
+
+plot(fitted(fit_lme), residuals(fit_lme),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+```
+
+### Zero-Inflated 
+
+```{r}
 fit <- glmmTMB(
-    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | site/block) + (1 | sample_id),
-    zi = ~ treatment + site + study_year,
+    p ~ as.factor(date) * treatment + (1 | site:block:study_year) + (1 | site:block),
+    zi = ~ .,
     family = lognormal(link = "log"),
     data = df_combined_LOD_0
 )
 
 summary(fit)
-```
-
-The above model appears not to converge (or something) since all the values are NaN, therefore we will try a model without random effects.
-
-### Without Random Effects
-
-```{r}
-fit_no_re <- glmmTMB(
-    p ~ treatment + site + study_year + as.numeric(factor(date)),
-    zi = ~ treatment + site + study_year,
-    family = lognormal(link = "log"),
-    data = df_combined_LOD_0
-)
-
-summary(fit_no_re)
-```
-
-Since no random effects worked, we will try adding the random effects back separately.
-
-### With Some Random Effects
-
-```{r}
-fit_site_block <- glmmTMB(
-    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | site/block),
-    zi = ~ treatment + site + study_year,
-    family = lognormal(link = "log"),
-    data = df_combined_LOD_0
-)
-
-summary(fit_site_block)
-```
-
-```{r}
-fit_sample_id <- glmmTMB(
-    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | sample_id),
-    zi = ~ treatment + site + study_year,
-    family = lognormal(link = "log"),
-    data = df_combined_LOD_0
-)
-
-summary(fit_sample_id)
-```
-
-### Model Comparison 
-
-```{r}
-AIC(fit_no_re, fit_sample_id)
-```
-
-### Model Diagnostics
-
-```{r}
-simulationOutput <- simulateResiduals(fittedModel = fit_no_re, plot = TRUE)
-```
-
-```{r}
-testZeroInflation(simulationOutput)
-```
-
-```{r}
-testDispersion(simulationOutput)
-```
-
-### 
-
-```{r}
-fit_quadratic <- glmmTMB(
-    p ~ treatment + site * study_year + poly(as.numeric(factor(date)), 2) + (1 | sample_id),
-    zi = ~ treatment + site + study_year,
-    family = lognormal(link = "log"),
-    data = df_combined_LOD_0
-)
-
-summary(fit_quadratic)
-
-simulationOutput <- simulateResiduals(fittedModel = fit_quadratic, plot = TRUE)
-testZeroInflation(fit_quadratic)
-testDispersion(fit_quadratic)
 ```
 
