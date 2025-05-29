@@ -19,6 +19,7 @@ library(readxl)
 library(writexl)
 library(patchwork)
 library(glmmTMB)
+library(car)
 ```
 
 ## Data Read-in
@@ -54,6 +55,32 @@ write_xlsx(out, "data/Master.xlsx")
 df_combined <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "combined")
 df_year_1 <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "year_1")
 df_year_2 <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "year_2")
+```
+
+```{r}
+df_combined <- df_combined %>%
+  mutate(
+    sample_id = as.factor(sample_id),
+    site = as.factor(site),
+    block = as.factor(block),
+    study_year = as.factor(study_year)
+  )
+
+df_year_1 <- df_year_1 %>%
+  mutate(
+    sample_id = as.factor(sample_id),
+    site = as.factor(site),
+    block = as.factor(block),
+    study_year = as.factor(study_year)
+  )
+
+df_year_2 <- df_year_2 %>%
+  mutate(
+    sample_id = as.factor(sample_id),
+    site = as.factor(site),
+    block = as.factor(block),
+    study_year = as.factor(study_year)
+  )
 ```
 
 ## EDA
@@ -109,6 +136,32 @@ prop_zero_NA <- df_combined_LOD_NA %>%
 prop_zero_0 %>%
   left_join(prop_zero_NA, by = "response", suffix = c("_0", "_NA")) %>%
   arrange(-prop_zero_0)
+```
+
+### Negative Values
+
+```{r}
+prop_neg_0 <- df_combined_LOD_0 %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x < 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = everything(), names_to = "response", values_to = "prop_negative")
+
+prop_neg_NA <- df_combined_LOD_NA %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x < 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = everything(), names_to = "response", values_to = "prop_negative")
+
+prop_neg_0 %>%
+  left_join(prop_neg_NA, by = "response", suffix = c("_0", "_NA")) %>%
+  arrange(-prop_negative_0)
 ```
 
 ### Concentration by Treatment Box Plots
@@ -179,6 +232,102 @@ wrap_plots(plots_NA, ncol = 2)
 
 ## Zero-Inflated Model
 
-```{r}
+### With Random Effects
 
+```{r}
+# Errors due to non-positive values (does not work with Gamma)
+# glmmTMB(
+#     p ~ treatment + site * study_year + sample_id + (1 | site/block) + (1 | sample_id),
+#     zi = ~ treatment + site + study_year,
+#     family = Gamma(link = "log"),
+#     data = df_combined_LOD_0
+# )
+
+fit <- glmmTMB(
+    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | site/block) + (1 | sample_id),
+    zi = ~ treatment + site + study_year,
+    family = lognormal(link = "log"),
+    data = df_combined_LOD_0
+)
+
+summary(fit)
 ```
+
+The above model appears not to converge (or something) since all the values are NaN, therefore we will try a model without random effects.
+
+### Without Random Effects
+
+```{r}
+fit_no_re <- glmmTMB(
+    p ~ treatment + site + study_year + as.numeric(factor(date)),
+    zi = ~ treatment + site + study_year,
+    family = lognormal(link = "log"),
+    data = df_combined_LOD_0
+)
+
+summary(fit_no_re)
+```
+
+Since no random effects worked, we will try adding the random effects back separately.
+
+### With Some Random Effects
+
+```{r}
+fit_site_block <- glmmTMB(
+    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | site/block),
+    zi = ~ treatment + site + study_year,
+    family = lognormal(link = "log"),
+    data = df_combined_LOD_0
+)
+
+summary(fit_site_block)
+```
+
+```{r}
+fit_sample_id <- glmmTMB(
+    p ~ treatment + site + study_year + as.numeric(factor(date)) + (1 | sample_id),
+    zi = ~ treatment + site + study_year,
+    family = lognormal(link = "log"),
+    data = df_combined_LOD_0
+)
+
+summary(fit_sample_id)
+```
+
+### Model Comparison 
+
+```{r}
+AIC(fit_no_re, fit_sample_id)
+```
+
+### Model Diagnostics
+
+```{r}
+simulationOutput <- simulateResiduals(fittedModel = fit_no_re, plot = TRUE)
+```
+
+```{r}
+testZeroInflation(simulationOutput)
+```
+
+```{r}
+testDispersion(simulationOutput)
+```
+
+### 
+
+```{r}
+fit_quadratic <- glmmTMB(
+    p ~ treatment + site * study_year + poly(as.numeric(factor(date)), 2) + (1 | sample_id),
+    zi = ~ treatment + site + study_year,
+    family = lognormal(link = "log"),
+    data = df_combined_LOD_0
+)
+
+summary(fit_quadratic)
+
+simulationOutput <- simulateResiduals(fittedModel = fit_quadratic, plot = TRUE)
+testZeroInflation(fit_quadratic)
+testDispersion(fit_quadratic)
+```
+
