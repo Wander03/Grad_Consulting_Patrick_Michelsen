@@ -23,6 +23,7 @@ library(car)
 library(emmeans)
 library(nlme)
 library(lmerTest)
+library(DHARMa)
 ```
 
 ## Data Read-in
@@ -240,23 +241,24 @@ wrap_plots(plots_NA, ncol = 2)
 #### EC
 
 ```{r}
-fit_lmer <- lmer(
-
-  ec ~
-    factor(date)*treatment +
-    (1 | site:block) +
-    (1 | treatment:site:block),
-
-  data = df_combined_LOD_0 %>% filter(study_year == 1)
-  )
-
-Anova(fit_lmer)
-
-plot(fitted(fit_lmer), residuals(fit_lmer),
-     xlab = "Fitted Values",
-     ylab = "Residuals",
-     main = "Residuals vs. Fitted Values")
-abline(h = 0, col = "red", lty = 2)
+# This create the same model as the code chunk after, just using a different package
+# fit_lmer <- lmer(
+# 
+#   ec ~
+#     factor(date)*treatment +
+#     (1 | site:block) +
+#     (1 | treatment:site:block),
+# 
+#   data = df_combined_LOD_0 %>% filter(study_year == 1)
+#   )
+# 
+# Anova(fit_lmer)
+# 
+# plot(fitted(fit_lmer), residuals(fit_lmer),
+#      xlab = "Fitted Values",
+#      ylab = "Residuals",
+#      main = "Residuals vs. Fitted Values")
+# abline(h = 0, col = "red", lty = 2)
 ```
 
 ```{r}
@@ -273,7 +275,7 @@ df_model <- df_combined_LOD_0 %>%
     trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
   )
 
-fit_lme <- lme(
+fit_lme_ec <- lme(
   fixed = ec ~ date * treatment,
   random = list(
     site_block_id = ~ 1, # Random intercept for site:block combinations
@@ -283,9 +285,9 @@ fit_lme <- lme(
   na.action = na.exclude
 )
 
-Anova(fit_lme)
+Anova(fit_lme_ec)
 
-plot(fitted(fit_lme), residuals(fit_lme),
+plot(fitted(fit_lme_ec), residuals(fit_lme_ec),
      xlab = "Fitted Values",
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
@@ -293,19 +295,21 @@ abline(h = 0, col = "red", lty = 2)
 ```
 
 ```{r}
-fit_glmer_gamma <- glmer(
-  ec ~ as.factor(date) * treatment +
-    (1 | site:block) +
-    (1 | treatment:site:block),
-  data = df_combined_LOD_0 %>% filter(study_year == 1),
-  family = Gamma(link = "log")
+fit_glmer_gamma_ec <- glmer(
+  ec ~ date * treatment +
+    (1 | site_block_id) +
+    (1 | trt_site_block_id),
+  data = df_model,
+  family = Gamma(link = "log"),
+  control = glmerControl(optimizer = "bobyqa"), # default optimizer did not converge
+  na.action = na.exclude
 )
 
-summary(fit_glmer_gamma)
+summary(fit_glmer_gamma_ec)
 
-sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma, plot = TRUE)
+sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma_ec, plot = TRUE)
 
-plot(fitted(fit_glmer_gamma), residuals(fit_glmer_gamma),
+plot(fitted(fit_glmer_gamma_ec), residuals(fit_glmer_gamma_ec),
      xlab = "Fitted Values",
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
@@ -315,7 +319,7 @@ abline(h = 0, col = "red", lty = 2)
 #### Ph
 
 ```{r}
-fit_lme <- lme(
+fit_lme_ph <- lme(
   fixed = p_h ~ as.factor(date) * treatment,
   random = list(
     site_block_id = ~ 1, # Random intercept for site:block combinations
@@ -325,7 +329,10 @@ fit_lme <- lme(
   na.action = na.exclude
 )
 
-plot(fitted(fit_lme), residuals(fit_lme),
+Anova(fit_lme_ph)
+S(fit_lme_ph)
+
+plot(fitted(fit_lme_ph), residuals(fit_lme_ph),
      xlab = "Fitted Values",
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
@@ -334,14 +341,147 @@ abline(h = 0, col = "red", lty = 2)
 
 ### Zero-Inflated 
 
+#### Nitrate
+
 ```{r}
-fit <- glmmTMB(
-    p ~ as.factor(date) * treatment + (1 | site:block:study_year) + (1 | site:block),
-    zi = ~ .,
+fit_nitrate <- glmmTMB(
+    nitrate ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+    zi = ~ treatment,
     family = lognormal(link = "log"),
-    data = df_combined_LOD_0
+    data = df_model
 )
 
-summary(fit)
+S(fit_nitrate)
+
+simulationOutput <- simulateResiduals(fittedModel = fit_nitrate, n = 500)
+plot(simulationOutput)
+
+testUniformity(simulationOutput)
+testOutliers(simulationOutput)
+
+testDispersion(simulationOutput)
+testZeroInflation(simulationOutput)
+
+library(ggeffects)
+library(RColorBrewer)
+pred_effects <- ggpredict(fit_nitrate, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") +
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "Nitrate",
+    title = "Predicted Values of Nitrate",
+    color = "Treatment"
+  )
+
+print(pred_effects)
+```
+
+#### NH4
+
+```{r}
+fit_nh4 <- glmmTMB(
+    nh4 ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+    zi = ~ treatment,
+    family = lognormal(link = "log"),
+    data = df_model
+)
+
+S(fit_nh4)
+
+simulationOutput <- simulateResiduals(fittedModel = fit_nh4, n = 500)
+plot(simulationOutput)
+
+testUniformity(simulationOutput)
+testOutliers(simulationOutput)
+
+testDispersion(simulationOutput)
+testZeroInflation(simulationOutput)
+
+library(ggeffects)
+library(RColorBrewer)
+pred_effects <- ggpredict(fit_nh4, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") + 
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "NH4",
+    title = "Predicted Values of NH4",
+    color = "Treatment"
+  )
+
+print(pred_effects)
+```
+
+#### Mg
+
+```{r}
+fit_mg <- glmmTMB(
+    mg ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+    zi = ~ treatment,
+    family = lognormal(link = "log"),
+    data = df_model
+)
+
+S(fit_mg)
+
+simulationOutput <- simulateResiduals(fittedModel = fit_mg, n = 500)
+plot(simulationOutput)
+
+testUniformity(simulationOutput)
+testOutliers(simulationOutput)
+
+testDispersion(simulationOutput)
+testZeroInflation(simulationOutput)
+
+library(ggeffects)
+library(RColorBrewer)
+pred_effects <- ggpredict(fit_mg, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") +
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "Mg",
+    title = "Predicted Values of Mg",
+    color = "Treatment"
+  )
+
+print(pred_effects)
+```
+
+#### P
+
+```{r}
+fit_p <- glmmTMB(
+    p ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+    zi = ~ treatment,
+    family = lognormal(link = "log"),
+    data = df_model
+)
+
+S(fit_p)
+
+simulationOutput <- simulateResiduals(fittedModel = fit_p, n = 500)
+plot(simulationOutput)
+
+testUniformity(simulationOutput)
+testOutliers(simulationOutput)
+
+testDispersion(simulationOutput)
+testZeroInflation(simulationOutput)
+
+library(ggeffects)
+library(RColorBrewer)
+pred_effects <- ggpredict(fit_p, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") + 
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "P",
+    title = "Predicted Values of P",
+    color = "Treatment"
+  )
+
+print(pred_effects)
 ```
 
