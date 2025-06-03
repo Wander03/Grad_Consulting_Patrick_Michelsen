@@ -536,7 +536,12 @@ lc_model_data <- df_combined %>%
     ec_censored = ifelse(ec == "LOD", 1, 0),
     p_h_censored = ifelse(p_h == "LOD", 1, 0),
     
-    
+    nh4 = ifelse(nh4 == "LOD", NA, as.numeric(nh4)),
+    nitrate = ifelse(nitrate == "LOD", NA, as.numeric(nitrate)),
+    mg = ifelse(mg == "LOD", NA, as.numeric(mg)),
+    p = ifelse(p == "LOD", NA, as.numeric(p)),
+    ec = ifelse(ec == "LOD", NA, as.numeric(ec)),
+    p_h = ifelse(p_h == "LOD", NA, as.numeric(p_h)),
     
     date = factor(date),
     treatment = factor(treatment),
@@ -546,15 +551,27 @@ lc_model_data <- df_combined %>%
     # Create combined grouping factors
     site_block_id = interaction(site, block, drop = TRUE),
     trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
-  ) %>%
-  mutate(across(
-    all_of(response_vars), 
-    ~ {
-      # Replace "LOD" with 0
-      x <- ifelse(.x == "LOD", -1, .x)
-      as.numeric(x)
-    }
-  ))
+  )
+
+fit_p <- glmmTMB(
+    p ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+    zi = ~ treatment,
+    family = Gamma(link = "log"),
+    data = lc_model_data,
+    na.action = na.omit
+)
+
+
+library(brms)
+fit <- brm(
+  formula = bf(p | cens(p_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data %>% filter(p >= 0),
+  family = Gamma(link = "log"),
+  chains = 4,
+  cores = 4,
+  warmup = 1000,
+  iter = 10000
+)
 
 
 library(survival)
