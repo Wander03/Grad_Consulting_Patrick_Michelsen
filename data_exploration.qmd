@@ -524,3 +524,58 @@ plot(pred_effects, colors = "flat") +
 emmip(fit_p, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
+```{r}
+response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
+
+lc_model_data <- df_combined %>%
+  mutate(
+    nh4_censored = ifelse(nh4 == "LOD", 1, 0),
+    nitrate_censored = ifelse(nitrate == "LOD", 1, 0),
+    mg_censored = ifelse(mg == "LOD", 1, 0),
+    p_censored = ifelse(p == "LOD", 1, 0),
+    ec_censored = ifelse(ec == "LOD", 1, 0),
+    p_h_censored = ifelse(p_h == "LOD", 1, 0),
+    
+    
+    
+    date = factor(date),
+    treatment = factor(treatment),
+    site = factor(site),
+    block = factor(block),
+    
+    # Create combined grouping factors
+    site_block_id = interaction(site, block, drop = TRUE),
+    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
+  ) %>%
+  mutate(across(
+    all_of(response_vars), 
+    ~ {
+      # Replace "LOD" with 0
+      x <- ifelse(.x == "LOD", -1, .x)
+      as.numeric(x)
+    }
+  ))
+
+
+library(survival)
+
+fit_p <- survreg(
+  Surv(p, p_censored == 0, type = "left") ~ date * treatment,
+  data = lc_model_data,
+  dist = "gaussian"  # Or "lognormal" if needed
+)
+
+summary(fit_p)
+
+# Predict expected values (ignoring censoring)
+predicted <- predict(fit_p, type = "response")
+
+# Compare with observed (non-censored) data
+observed <- lc_model_data$p[lc_model_data$p_censored == 0]
+
+plot(predicted[lc_model_data$p_censored == 0], observed,
+     xlab = "Predicted", ylab = "Observed",
+     main = "Predicted vs. Observed (Non-Censored)")
+abline(0, 1, col = "red")  # Points should cluster around the line
+```
+
