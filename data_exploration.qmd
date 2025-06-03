@@ -8,6 +8,11 @@ code-fold: true
 embed-resources: true
 ---
 
+
+NOTE:
+- try left censored
+- email abt negative values in data
+
 ## Set-up
 
 ```{r}
@@ -140,6 +145,30 @@ prop_zero_NA <- df_combined_LOD_NA %>%
 prop_zero_0 %>%
   left_join(prop_zero_NA, by = "response", suffix = c("_0", "_NA")) %>%
   arrange(-prop_zero_0)
+
+prop_zero_0 <- df_combined_LOD_0 %>%
+  group_by(study_year) %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x == 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = -study_year, names_to = "response", values_to = "prop_zero")
+
+prop_zero_NA <- df_combined_LOD_NA %>%
+  group_by(study_year) %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x == 0, na.rm = T)
+      }
+    )) %>%
+  pivot_longer(cols = -study_year, names_to = "response", values_to = "prop_zero")
+
+prop_zero_0 %>%
+  left_join(prop_zero_NA, by = c("response", "study_year"), suffix = c("_0", "_NA")) %>%
+  arrange(study_year, -prop_zero_0)
 ```
 
 ### Negative Values
@@ -292,6 +321,8 @@ plot(fitted(fit_lme_ec), residuals(fit_lme_ec),
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
 abline(h = 0, col = "red", lty = 2)
+
+emmip(fit_lme_ec, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
 ```{r}
@@ -307,13 +338,15 @@ fit_glmer_gamma_ec <- glmer(
 
 summary(fit_glmer_gamma_ec)
 
-sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma_ec, plot = TRUE)
+# sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma_ec, plot = TRUE)
 
 plot(fitted(fit_glmer_gamma_ec), residuals(fit_glmer_gamma_ec),
      xlab = "Fitted Values",
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
 abline(h = 0, col = "red", lty = 2)
+
+emmip(fit_glmer_gamma_ec, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
 #### Ph
@@ -337,6 +370,8 @@ plot(fitted(fit_lme_ph), residuals(fit_lme_ph),
      ylab = "Residuals",
      main = "Residuals vs. Fitted Values")
 abline(h = 0, col = "red", lty = 2)
+
+emmip(fit_lme_ph, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
 ### Zero-Inflated 
@@ -344,6 +379,7 @@ abline(h = 0, col = "red", lty = 2)
 #### Nitrate
 
 ```{r}
+#| error: false
 fit_nitrate <- glmmTMB(
     nitrate ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
     zi = ~ treatment,
@@ -482,6 +518,9 @@ plot(pred_effects, colors = "flat") +
     color = "Treatment"
   )
 
-print(pred_effects)
+# print(pred_effects)
+
+
+emmip(fit_p, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
