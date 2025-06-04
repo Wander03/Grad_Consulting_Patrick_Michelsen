@@ -521,6 +521,8 @@ plot(pred_effects, colors = "flat") +
 # print(pred_effects)
 ```
 
+# Left-Censored Mixed Model Testing (brms)
+
 ```{r}
 response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
 
@@ -549,7 +551,9 @@ lc_model_data <- df_combined %>%
     site_block_id = interaction(site, block, drop = TRUE),
     trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
   )
+```
 
+```{r}
 library(brms)
 fit <- brm(
   formula = bf(nitrate | cens(nitrate_censored) ~ date * treatment * study_year + (1 | site_block_id) + (1 | trt_site_block_id)),
@@ -582,4 +586,8 @@ emm_treatments
 
 pairs(emm_treatments)
 plot(emm_treatments) + theme_bw()
+
+
+saveRDS(fit, file = "brms_nitrate_model.rds")
+# fit <- readRDS(file = "brms_nitrate_model.rds")
 ```
