@@ -519,9 +519,6 @@ plot(pred_effects, colors = "flat") +
   )
 
 # print(pred_effects)
-
-
-emmip(fit_p, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
 ```{r}
@@ -536,12 +533,12 @@ lc_model_data <- df_combined %>%
     ec_censored = ifelse(ec == "LOD", 1, 0),
     p_h_censored = ifelse(p_h == "LOD", 1, 0),
     
-    nh4 = ifelse(nh4 == "LOD", NA, as.numeric(nh4)),
-    nitrate = ifelse(nitrate == "LOD", NA, as.numeric(nitrate)),
-    mg = ifelse(mg == "LOD", NA, as.numeric(mg)),
-    p = ifelse(p == "LOD", NA, as.numeric(p)),
-    ec = ifelse(ec == "LOD", NA, as.numeric(ec)),
-    p_h = ifelse(p_h == "LOD", NA, as.numeric(p_h)),
+    nh4 = ifelse(nh4 == "LOD", -99, as.numeric(nh4)),
+    nitrate = ifelse(nitrate == "LOD", -99, as.numeric(nitrate)),
+    mg = ifelse(mg == "LOD", -99, as.numeric(mg)),
+    p = ifelse(p == "LOD", -99, as.numeric(p)),
+    ec = ifelse(ec == "LOD", -99, as.numeric(ec)),
+    p_h = ifelse(p_h == "LOD", -99, as.numeric(p_h)),
     
     date = factor(date),
     treatment = factor(treatment),
@@ -553,46 +550,36 @@ lc_model_data <- df_combined %>%
     trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
   )
 
-fit_p <- glmmTMB(
-    p ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
-    zi = ~ treatment,
-    family = Gamma(link = "log"),
-    data = lc_model_data,
-    na.action = na.omit
-)
-
-
 library(brms)
 fit <- brm(
-  formula = bf(p | cens(p_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
-  data = lc_model_data %>% filter(p >= 0),
+  formula = bf(nitrate | cens(nitrate_censored) ~ date * treatment * study_year + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data,
   family = Gamma(link = "log"),
   chains = 4,
-  cores = 4,
   warmup = 1000,
-  iter = 10000
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345
 )
 
+summary(fit)
+neff_ratio(fit)
+plot(fit, type = "trace", nvariables = 2)
+# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
 
-library(survival)
+pp_check(fit)
+pp_check(fit, type = "dens_overlay", nsamples = 100)
 
-fit_p <- survreg(
-  Surv(p, p_censored == 0, type = "left") ~ date * treatment,
-  data = lc_model_data,
-  dist = "gaussian"  # Or "lognormal" if needed
-)
+loo(fit)
 
-summary(fit_p)
 
-# Predict expected values (ignoring censoring)
-predicted <- predict(fit_p, type = "response")
+conditional_effects(fit, effects = "treatment")
+conditional_effects(fit, effects = "date:treatment")
 
-# Compare with observed (non-censored) data
-observed <- lc_model_data$p[lc_model_data$p_censored == 0]
 
-plot(predicted[lc_model_data$p_censored == 0], observed,
-     xlab = "Predicted", ylab = "Observed",
-     main = "Predicted vs. Observed (Non-Censored)")
-abline(0, 1, col = "red")  # Points should cluster around the line
+emm_treatments <- emmeans(fit, ~ treatment)
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
 ```
-
