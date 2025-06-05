@@ -8,11 +8,6 @@ code-fold: true
 embed-resources: true
 ---
 
-
-NOTE:
-- try left censored
-- email abt negative values in data
-
 ## Set-up
 
 ```{r}
@@ -119,6 +114,19 @@ df_combined_LOD_NA <- df_combined %>%
       as.numeric(x)
     }
   ))
+```
+
+### Count of LOD
+
+```{r}
+df_combined %>%
+  group_by(treatment) %>%
+  summarise(across(
+    all_of(response_vars), 
+    ~ {
+      x <- mean(.x == "LOD", na.rm = T)
+      }
+    ))
 ```
 
 ### Count of Zeros
@@ -265,34 +273,13 @@ wrap_plots(plots_NA, ncol = 2)
 
 ## Models
 
-### Responses with no Zeros
+### Responses with no Zero
 
-#### EC
-
-```{r}
-# This create the same model as the code chunk after, just using a different package
-# fit_lmer <- lmer(
-# 
-#   ec ~
-#     factor(date)*treatment +
-#     (1 | site:block) +
-#     (1 | treatment:site:block),
-# 
-#   data = df_combined_LOD_0 %>% filter(study_year == 1)
-#   )
-# 
-# Anova(fit_lmer)
-# 
-# plot(fitted(fit_lmer), residuals(fit_lmer),
-#      xlab = "Fitted Values",
-#      ylab = "Residuals",
-#      main = "Residuals vs. Fitted Values")
-# abline(h = 0, col = "red", lty = 2)
-```
+#### Data
 
 ```{r}
 df_model <- df_combined_LOD_0 %>%
-  filter(study_year == 1) %>%
+  filter(study_year == 1) %>% # Can change this to only look at year 2, or comment out to look at both years
   mutate(
     date = factor(date),
     treatment = factor(treatment),
@@ -303,26 +290,30 @@ df_model <- df_combined_LOD_0 %>%
     site_block_id = interaction(site, block, drop = TRUE),
     trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
   )
+```
 
-fit_lme_ec <- lme(
-  fixed = ec ~ date * treatment,
-  random = list(
-    site_block_id = ~ 1, # Random intercept for site:block combinations
-    trt_site_block_id = ~ 1 # Random intercept for treatment:site:block combinations
-  ),
-  data = df_model,
-  na.action = na.exclude
-)
+#### EC
 
-Anova(fit_lme_ec)
-
-plot(fitted(fit_lme_ec), residuals(fit_lme_ec),
-     xlab = "Fitted Values",
-     ylab = "Residuals",
-     main = "Residuals vs. Fitted Values")
-abline(h = 0, col = "red", lty = 2)
-
-emmip(fit_lme_ec, treatment ~ date, type = "response", CIs = T) + theme_bw()
+```{r}
+# fit_lme_ec <- lme(
+#   fixed = ec ~ date * treatment,
+#   random = list(
+#     site_block_id = ~ 1, # Random intercept for site:block combinations
+#     trt_site_block_id = ~ 1 # Random intercept for treatment:site:block combinations
+#   ),
+#   data = df_model,
+#   na.action = na.exclude
+# )
+# 
+# Anova(fit_lme_ec)
+# 
+# plot(fitted(fit_lme_ec), residuals(fit_lme_ec),
+#      xlab = "Fitted Values",
+#      ylab = "Residuals",
+#      main = "Residuals vs. Fitted Values")
+# abline(h = 0, col = "red", lty = 2)
+# 
+# emmip(fit_lme_ec, treatment ~ date, type = "response", CIs = T) + theme_bw()
 ```
 
 ```{r}
@@ -337,8 +328,6 @@ fit_glmer_gamma_ec <- glmer(
 )
 
 summary(fit_glmer_gamma_ec)
-
-# sim_res_gamma <- DHARMa::simulateResiduals(fit_glmer_gamma_ec, plot = TRUE)
 
 plot(fitted(fit_glmer_gamma_ec), residuals(fit_glmer_gamma_ec),
      xlab = "Fitted Values",
@@ -371,7 +360,255 @@ plot(fitted(fit_lme_ph), residuals(fit_lme_ph),
      main = "Residuals vs. Fitted Values")
 abline(h = 0, col = "red", lty = 2)
 
-emmip(fit_lme_ph, treatment ~ date, type = "response", CIs = T) + theme_bw()
+emmip(fit_lme_ph, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = df_model,
+             aes(x = date, y = p_h, color = treatment),
+             alpha = 0.2,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+### Left-Censored Mixed Model Testing (brms)
+
+#### Data
+
+```{r}
+response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
+
+lc_model_data <- df_combined %>%
+  mutate(
+    nh4_censored = ifelse(nh4 == "LOD", -1, 0),
+    nitrate_censored = ifelse(nitrate == "LOD", -1, 0),
+    mg_censored = ifelse(mg == "LOD", -1, 0),
+    p_censored = ifelse(p == "LOD", -1, 0),
+    ec_censored = ifelse(ec == "LOD", -1, 0),
+    p_h_censored = ifelse(p_h == "LOD", -1, 0),
+    
+    # Since we do not know the detection limit, I set the LOD values to the min / 2
+    nh4 = ifelse(nh4 == "LOD", -0.2165/2, as.numeric(nh4)),
+    nitrate = ifelse(nitrate == "LOD", -2.2536/2, as.numeric(nitrate)),
+    mg = ifelse(mg == "LOD", 2.036/2, as.numeric(mg)),
+    p = ifelse(p == "LOD", 0.0058/2, as.numeric(p)),
+    ec = ifelse(ec == "LOD", 0.150/2, as.numeric(ec)),
+    p_h = ifelse(p_h == "LOD", 6.150/2, as.numeric(p_h)),
+    
+    date = factor(date),
+    treatment = factor(treatment),
+    site = factor(site),
+    block = factor(block),
+    
+    # Create combined grouping factors
+    site_block_id = interaction(site, block, drop = TRUE),
+    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
+  )
+```
+
+#### Nitrate
+
+```{r}
+library(brms)
+
+df_combined_LOD_NA %>% summary()
+lc_model_data %>% filter(nitrate_censored == 0) %>% ggplot() + geom_histogram(aes(x = nitrate), bins = 1000)
+
+fit_nitrate <- brm(
+  formula = bf(nitrate | cens(nitrate_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data,
+  family = Gamma(link = "log"),
+  chains = 4,
+  warmup = 1000,
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345
+)
+
+summary(fit_nitrate)
+neff_ratio(fit_nitrate)
+prior_summary(fit_nitrate)
+# plot(fit, type = "trace", nvariables = 1)
+# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
+
+pp_check(fit_nitrate)
+pp_check(fit_nitrate, type = "dens_overlay", nsamples = 100)
+
+loo(fit_nitrate)
+
+
+conditional_effects(fit_nitrate, effects = "treatment")
+conditional_effects(fit_nitrate, effects = "date:treatment")
+
+
+emm_treatments <- emmeans(fit_nitrate, ~ treatment)
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+```
+
+#### NH4
+
+```{r}
+fit_nh4 <- brm(
+  formula = bf(nh4 | cens(nh4_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data,
+  family = Gamma(link = "log"),
+  chains = 4,
+  warmup = 1000,
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345
+)
+
+summary(fit_nh4)
+neff_ratio(fit_nh4)
+prior_summary(fit_nh4)
+# plot(fit, type = "trace", nvariables = 1)
+# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
+
+pp_check(fit_nh4)
+pp_check(fit_nh4, type = "dens_overlay", nsamples = 100)
+
+loo(fit_nh4)
+
+
+conditional_effects(fit_nh4, effects = "treatment")
+conditional_effects(fit_nh4, effects = "date:treatment")
+
+
+emm_treatments <- emmeans(fit_nh4, ~ treatment)
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+```
+
+#### Mg
+
+```{r}
+fit_mg <- brm(
+  formula = bf(mg | cens(mg_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data %>% filter(study_year == 1),
+  family = Gamma(link = "log"),
+  chains = 4,
+  warmup = 1000,
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345
+)
+
+summary(fit_mg)
+neff_ratio(fit_mg)
+prior_summary(fit_mg)
+
+plot(fit, type = "trace")
+# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
+
+pp_check(fit_mg)
+pp_check(fit_mg, type = "dens_overlay", nsamples = 100)
+
+loo(fit_mg)
+
+
+conditional_effects(fit_mg, effects = "treatment")
+conditional_effects(fit_mg, effects = "date:treatment")
+
+
+emm_treatments <- emmeans(fit_mg, ~ treatment)
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = mg, color = as.factor(mg_censored)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+```{r}
+fit_glmer_gamma_mg <- glmer(
+  mg ~ date * treatment +
+    (1 | site_block_id) +
+    (1 | trt_site_block_id),
+  data = lc_model_data %>% filter(study_year == 1),
+  family = Gamma(link = "log"),
+  # control = glmerControl(optimizer = "bobyqa"), # default optimizer did not converge
+  na.action = na.exclude
+)
+
+summary(fit_glmer_gamma_mg)
+S(fit_mg)
+
+plot(fitted(fit_glmer_gamma_mg), residuals(fit_glmer_gamma_mg),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs. Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+
+emmip(fit_glmer_gamma_mg, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data %>% filter(study_year == 1),
+             aes(x = date, y = mg, color = treatment),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+
+emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data %>% filter(study_year == 1),
+             aes(x = date, y = mg, color = treatment),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+#### P
+
+```{r}
+fit_p <- brm(
+  formula = bf(p | cens(p_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data,
+  family = Gamma(link = "log"),
+  chains = 4,
+  warmup = 1000,
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345
+)
+
+summary(fit_p)
+neff_ratio(fit_p)
+prior_summary(fit_p)
+# plot(fit, type = "trace", nvariables = 1)
+# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
+
+pp_check(fit_p)
+pp_check(fit_p, type = "dens_overlay", nsamples = 100) + xlim(c(0, 5))
+
+loo(fit_p)
+
+
+conditional_effects(fit_p, effects = "treatment")
+conditional_effects(fit_p, effects = "date:treatment")
+
+
+emm_treatments <- emmeans(fit_p, ~ treatment, type="response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_p, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = p, color = as.factor(trt_site_block_id)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+```{r}
+saveRDS(fit_mg, file = "brms_mg_model.rds")
+# fit <- readRDS(file = "brms_nitrate_model.rds")
 ```
 
 ### Zero-Inflated 
@@ -519,75 +756,4 @@ plot(pred_effects, colors = "flat") +
   )
 
 # print(pred_effects)
-```
-
-# Left-Censored Mixed Model Testing (brms)
-
-```{r}
-response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
-
-lc_model_data <- df_combined %>%
-  mutate(
-    nh4_censored = ifelse(nh4 == "LOD", 1, 0),
-    nitrate_censored = ifelse(nitrate == "LOD", 1, 0),
-    mg_censored = ifelse(mg == "LOD", 1, 0),
-    p_censored = ifelse(p == "LOD", 1, 0),
-    ec_censored = ifelse(ec == "LOD", 1, 0),
-    p_h_censored = ifelse(p_h == "LOD", 1, 0),
-    
-    nh4 = ifelse(nh4 == "LOD", -99, as.numeric(nh4)),
-    nitrate = ifelse(nitrate == "LOD", -99, as.numeric(nitrate)),
-    mg = ifelse(mg == "LOD", -99, as.numeric(mg)),
-    p = ifelse(p == "LOD", -99, as.numeric(p)),
-    ec = ifelse(ec == "LOD", -99, as.numeric(ec)),
-    p_h = ifelse(p_h == "LOD", -99, as.numeric(p_h)),
-    
-    date = factor(date),
-    treatment = factor(treatment),
-    site = factor(site),
-    block = factor(block),
-    
-    # Create combined grouping factors
-    site_block_id = interaction(site, block, drop = TRUE),
-    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
-  )
-```
-
-```{r}
-library(brms)
-fit <- brm(
-  formula = bf(nitrate | cens(nitrate_censored) ~ date * treatment * study_year + (1 | site_block_id) + (1 | trt_site_block_id)),
-  data = lc_model_data,
-  family = Gamma(link = "log"),
-  chains = 4,
-  warmup = 1000,
-  iter = 5000,
-  cores = parallel::detectCores(),
-  seed = 12345
-)
-
-summary(fit)
-neff_ratio(fit)
-plot(fit, type = "trace", nvariables = 2)
-# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
-
-pp_check(fit)
-pp_check(fit, type = "dens_overlay", nsamples = 100)
-
-loo(fit)
-
-
-conditional_effects(fit, effects = "treatment")
-conditional_effects(fit, effects = "date:treatment")
-
-
-emm_treatments <- emmeans(fit, ~ treatment)
-emm_treatments
-
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-
-
-saveRDS(fit, file = "brms_nitrate_model.rds")
-# fit <- readRDS(file = "brms_nitrate_model.rds")
 ```
