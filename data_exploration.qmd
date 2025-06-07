@@ -24,6 +24,7 @@ library(emmeans)
 library(nlme)
 library(lmerTest)
 library(DHARMa)
+library(brms)
 ```
 
 ## Data Read-in
@@ -39,14 +40,16 @@ df_year_2 <- read_csv(here::here("data", "Year2_Master.csv")) %>% clean_names()
 
 # Change date format
 df_combined <- df_combined %>%
-  select(-bad_date) %>% # Remove unnecessary column
-  mutate(date = as.Date(date, format="%m_%d_%Y"))
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
 
 df_year_1 <- df_year_1 %>%
-  mutate(date = as.Date(date, format="%m_%d_%Y"))
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
 
 df_year_2 <- df_year_2 %>%
-  mutate(date = as.Date(date, format="%m_%d_%Y"))
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
 
 # Save as single Excel File
 out <- list("combined" = df_combined, "year_1" = df_year_1, "year_2" = df_year_2)
@@ -93,7 +96,7 @@ df_year_2 <- df_year_2 %>%
 
 ```{r}
 #| warning: false
-response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
+response_vars <- c("nh4", "no3", "mg", "p", "ec", "p_h")
 
 df_combined_LOD_0 <- df_combined %>%
     mutate(across(
@@ -373,24 +376,19 @@ emmip(fit_lme_ph, ~ date | treatment, type = "response", CIs = T) +
 #### Data
 
 ```{r}
-response_vars <- c("nh4", "nitrate", "mg", "p", "ec", "p_h")
+response_vars <- c("nh4", "no3", "mg", "p")
 
 lc_model_data <- df_combined %>%
   mutate(
     nh4_censored = ifelse(nh4 == "LOD", -1, 0),
-    nitrate_censored = ifelse(nitrate == "LOD", -1, 0),
+    no3_censored = ifelse(no3 == "LOD", -1, 0),
     mg_censored = ifelse(mg == "LOD", -1, 0),
     p_censored = ifelse(p == "LOD", -1, 0),
-    ec_censored = ifelse(ec == "LOD", -1, 0),
-    p_h_censored = ifelse(p_h == "LOD", -1, 0),
     
-    # Since we do not know the detection limit, I set the LOD values to the min / 2
-    nh4 = ifelse(nh4 == "LOD", -0.2165/2, as.numeric(nh4)),
-    nitrate = ifelse(nitrate == "LOD", -2.2536/2, as.numeric(nitrate)),
-    mg = ifelse(mg == "LOD", 2.036/2, as.numeric(mg)),
-    p = ifelse(p == "LOD", 0.0058/2, as.numeric(p)),
-    ec = ifelse(ec == "LOD", 0.150/2, as.numeric(ec)),
-    p_h = ifelse(p_h == "LOD", 6.150/2, as.numeric(p_h)),
+    nh4 = ifelse(nh4 == "LOD", nh4_lod, as.numeric(nh4)),
+    no3 = ifelse(no3 == "LOD", n03_lod, as.numeric(no3)),
+    mg = ifelse(mg == "LOD", mg_lod, as.numeric(mg)),
+    p = ifelse(p == "LOD", p_lod, as.numeric(p)),
     
     date = factor(date),
     treatment = factor(treatment),
@@ -403,51 +401,22 @@ lc_model_data <- df_combined %>%
   )
 ```
 
-#### Nitrate
+#### Run and Save Models
 
 ```{r}
-library(brms)
-
-df_combined_LOD_NA %>% summary()
-lc_model_data %>% filter(nitrate_censored == 0) %>% ggplot() + geom_histogram(aes(x = nitrate), bins = 1000)
-
-fit_nitrate <- brm(
-  formula = bf(nitrate | cens(nitrate_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+#| eval: false
+fit_no3 <- brm(
+  formula = bf(no3 | cens(no3_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
   data = lc_model_data,
   family = Gamma(link = "log"),
   chains = 4,
   warmup = 1000,
   iter = 5000,
   cores = parallel::detectCores(),
-  seed = 12345
+  seed = 12345,
+  file = here::here("models", "fit_no3")
 )
 
-summary(fit_nitrate)
-neff_ratio(fit_nitrate)
-prior_summary(fit_nitrate)
-# plot(fit, type = "trace", nvariables = 1)
-# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
-
-pp_check(fit_nitrate)
-pp_check(fit_nitrate, type = "dens_overlay", nsamples = 100)
-
-loo(fit_nitrate)
-
-
-conditional_effects(fit_nitrate, effects = "treatment")
-conditional_effects(fit_nitrate, effects = "date:treatment")
-
-
-emm_treatments <- emmeans(fit_nitrate, ~ treatment)
-emm_treatments
-
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-```
-
-#### NH4
-
-```{r}
 fit_nh4 <- brm(
   formula = bf(nh4 | cens(nh4_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
   data = lc_model_data,
@@ -456,35 +425,10 @@ fit_nh4 <- brm(
   warmup = 1000,
   iter = 5000,
   cores = parallel::detectCores(),
-  seed = 12345
+  seed = 12345,
+  file = here::here("models", "fit_nh4")
 )
 
-summary(fit_nh4)
-neff_ratio(fit_nh4)
-prior_summary(fit_nh4)
-# plot(fit, type = "trace", nvariables = 1)
-# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
-
-pp_check(fit_nh4)
-pp_check(fit_nh4, type = "dens_overlay", nsamples = 100)
-
-loo(fit_nh4)
-
-
-conditional_effects(fit_nh4, effects = "treatment")
-conditional_effects(fit_nh4, effects = "date:treatment")
-
-
-emm_treatments <- emmeans(fit_nh4, ~ treatment)
-emm_treatments
-
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-```
-
-#### Mg
-
-```{r}
 fit_mg <- brm(
   formula = bf(mg | cens(mg_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
   data = lc_model_data,
@@ -493,27 +437,108 @@ fit_mg <- brm(
   warmup = 1000,
   iter = 5000,
   cores = parallel::detectCores(),
-  seed = 12345
+  seed = 12345,
+  file = here::here("models", "fit_mg")
 )
 
-summary(fit_mg)
-neff_ratio(fit_mg)
-prior_summary(fit_mg)
+fit_p <- brm(
+  formula = bf(p | cens(p_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
+  data = lc_model_data,
+  family = Gamma(link = "log"),
+  chains = 4,
+  warmup = 1000,
+  iter = 5000,
+  cores = parallel::detectCores(),
+  seed = 12345,
+  file = here::here("models", "fit_p")
+)
+```
 
-plot(fit, type = "trace")
-# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
+```{r}
+fit_no3 <- here::here("models", "fit_no3.rds")
+fit_nh4 <- here::here("models", "fit_nh4.rds")
+fit_mg <- here::here("models", "fit_mg.rds")
+fit_p <- here::here("models", "fit_p.rds")
+```
+
+#### NO3
+
+```{r}
+summary(fit_no3)
+# neff_ratio(fit_no3)
+# prior_summary(fit_no3)
+# plot(fit, type = "trace", nvariables = 1)
+
+pp_check(fit_no3) + xlim(0, 100)
+pp_check(fit_no3, type = "dens_overlay", ndraws = 100) + xlim(0, 100)
+
+# loo(fit_no3)
+
+conditional_effects(fit_no3, effects = "treatment")
+conditional_effects(fit_no3, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_no3, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+
+emmip(fit_no3, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = no3, color = as.factor(no3_censored)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  # ylim(0, 1000) +
+  theme_bw()
+```
+
+#### NH4
+
+```{r}
+summary(fit_nh4)
+# neff_ratio(fit_nh4)
+# prior_summary(fit_nh4)
+# plot(fit, type = "trace", nvariables = 1)
+
+pp_check(fit_nh4) + xlim(0, 10)
+pp_check(fit_nh4, type = "dens_overlay", ndraws = 100) + xlim(0, 10)
+
+# loo(fit_nh4)
+
+conditional_effects(fit_nh4, effects = "treatment")
+conditional_effects(fit_nh4, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_nh4, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_nh4, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = nh4, color = as.factor(mg_censored)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  # ylim(0, 10) +
+  theme_bw()
+```
+
+#### Mg
+
+```{r}
+summary(fit_mg)
+# neff_ratio(fit_mg)
+# prior_summary(fit_mg)
+# plot(fit, type = "trace")
 
 pp_check(fit_mg)
-pp_check(fit_mg, type = "dens_overlay", nsamples = 100)
+pp_check(fit_mg, type = "dens_overlay", ndraws = 100)
 
-loo(fit_mg)
-
+# loo(fit_mg)
 
 conditional_effects(fit_mg, effects = "treatment")
 conditional_effects(fit_mg, effects = "date:treatment")
 
-
-emm_treatments <- emmeans(fit_mg, ~ treatment)
+emm_treatments <- emmeans(fit_mg, ~ treatment, type = "response")
 emm_treatments
 
 pairs(emm_treatments)
@@ -565,32 +590,18 @@ emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) +
 #### P
 
 ```{r}
-fit_p <- brm(
-  formula = bf(p | cens(p_censored) ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id)),
-  data = lc_model_data,
-  family = Gamma(link = "log"),
-  chains = 4,
-  warmup = 1000,
-  iter = 5000,
-  cores = parallel::detectCores(),
-  seed = 12345
-)
-
 summary(fit_p)
-neff_ratio(fit_p)
-prior_summary(fit_p)
+# neff_ratio(fit_p)
+# prior_summary(fit_p)
 # plot(fit, type = "trace", nvariables = 1)
-# mcmc_plot(fit, type = "acf_bar", variable = c("treatment", "study_year"))
 
-pp_check(fit_p)
-pp_check(fit_p, type = "dens_overlay", nsamples = 100) + xlim(c(0, 5))
+pp_check(fit_p) + xlim(0, 1)
+pp_check(fit_p, type = "dens_overlay", ndraws = 100)  + xlim(0, 1)
 
-loo(fit_p)
-
+# loo(fit_p)
 
 conditional_effects(fit_p, effects = "treatment")
 conditional_effects(fit_p, effects = "date:treatment")
-
 
 emm_treatments <- emmeans(fit_p, ~ treatment, type="response")
 emm_treatments
@@ -600,15 +611,11 @@ plot(emm_treatments) + theme_bw()
 
 emmip(fit_p, ~ date | treatment, type = "response", CIs = T) + 
   geom_point(data = lc_model_data,
-             aes(x = date, y = p, color = as.factor(trt_site_block_id)),
+             aes(x = date, y = p, color = as.factor(p_censored)),
              alpha = 0.7,
              position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  # ylim(0, 4) +
   theme_bw()
-```
-
-```{r}
-saveRDS(fit_mg, file = "brms_mg_model.rds")
-# fit <- readRDS(file = "brms_nitrate_model.rds")
 ```
 
 ### Zero-Inflated 
@@ -617,10 +624,10 @@ saveRDS(fit_mg, file = "brms_mg_model.rds")
 
 ```{r}
 #| error: false
-fit_nitrate <- glmmTMB(
-    nitrate ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
+fit_no3 <- glmmTMB(
+    no3 ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
     zi = ~ treatment,
-    family = lognormal(link = "log"),
+    family = glmmTMB::lognormal(link = "log"),
     data = df_model
 )
 
@@ -656,7 +663,7 @@ print(pred_effects)
 fit_nh4 <- glmmTMB(
     nh4 ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
     zi = ~ treatment,
-    family = lognormal(link = "log"),
+    family = glmmTMB::lognormal(link = "log"),
     data = df_model
 )
 
@@ -692,7 +699,7 @@ print(pred_effects)
 fit_mg <- glmmTMB(
     mg ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
     zi = ~ treatment,
-    family = lognormal(link = "log"),
+    family = glmmTMB::lognormal(link = "log"),
     data = df_model
 )
 
@@ -728,7 +735,7 @@ print(pred_effects)
 fit_p <- glmmTMB(
     p ~ date * treatment + (1 | site_block_id) + (1 | trt_site_block_id),
     zi = ~ treatment,
-    family = lognormal(link = "log"),
+    family = glmmTMB::lognormal(link = "log"),
     data = df_model
 )
 
@@ -754,6 +761,4 @@ plot(pred_effects, colors = "flat") +
     title = "Predicted Values of P",
     color = "Treatment"
   )
-
-# print(pred_effects)
 ```
