@@ -1,6 +1,6 @@
 ---
 title: "Statistical Analysis of Soil Data"
-author: "Andrew Kerr"
+author: "Andrew Kerr, Kyle Bistrain, Rachel Roggenkemper, Liam Quach"
 editor: source
 format: 
   html:
