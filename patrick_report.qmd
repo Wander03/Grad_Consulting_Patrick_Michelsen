@@ -31,6 +31,7 @@ library(brms)
 library(ggeffects)
 library(RColorBrewer)
 library(gt)
+library(multcomp)
 
 # Formatting for knitted file
 theme_set(theme_minimal())
@@ -143,15 +144,15 @@ Depending on which method we use, the models answer slightly different research 
 
 #### Treating LOD as 0
 
-- **Assumption**: You are assuming that any measurement below the Limit of Detection (LOD) is a true zero. You're stating that the response is completely absent from that sample.
+- **Assumption**: You are assuming that any measurement below the Limit of Detection (LOD) is a true zero. However, since your data does not have any true zeros this allows us to use a zero-inflated model to model (1) probability below LOD and (2) mean if above LOD.
 
-- **Research Question(s) it Answers**: This approach, especially with a zero-inflated model, splits your research question into two parts:
+- **Research Question(s) it Answers**: This approach splits your research question into two parts:
 
-  1. Presence/Absence: Does the treatment affect the probability that the response is completely absent (i.e., a "true zero")?
+  1. Presence/Absence: Does the treatment affect the probability that the response is LOD?
 
-  2. Concentration when Present: If the response is present (i.e., not a zero), how does the treatment affect its concentration?
+  2. Concentration when Present: If the response is present (i.e., not LOD), how does the treatment affect its concentration?
 
-- **Downside**: This is a very strong and often incorrect assumption. In most environmental systems, a value below the LOD doesn't mean the response is completely absent, just that its concentration is too low for your equipment to measure accurately. By substituting zero, you are artificially deflating the mean and variance of your data, which can bias your results and lead you to **underestimate the true average concentration**.
+- **Downside**: In most environmental systems, a value below the LOD doesn't mean the response is completely absent, just that its concentration is too low for your equipment to measure accurately. By substituting zero, you are artificially deflating the mean and variance of your data, which can bias your results and lead you to **underestimate the true average concentration**.
 
 #### Treating LOD as Left-Censored
 
@@ -170,12 +171,25 @@ Before we build our models, it's important to explore the data to understand its
 Here, we'll look at the proportion of zeros (after converting LOD to 0) for each response variable. This will help us understand the extent of the "zero problem".
 
 ```{r}
-# Calculate the proportion of zeros for each response variable
-df_combined_LOD_0 %>%
-  select(all_of(response_vars)) %>%
-  map_df(~ mean(.x == 0, na.rm = TRUE)) %>%
-  pivot_longer(everything(), names_to = "Response", values_to = "Proportion of Zeros") %>%
-  arrange(-`Proportion of Zeros`)
+#| echo: false
+
+# Calculate the proportion of LODs and zeros for each response variable
+lod <- df_combined %>%
+  group_by(treatment) %>%
+  summarise(across(all_of(response_vars), ~ mean(.x == "LOD", na.rm = T)))
+
+zero <- df_combined %>%
+  summarise(across(all_of(response_vars), ~ mean(.x == "0", na.rm = T))) %>%
+  pivot_longer(cols = everything(), names_to = "Response", values_to = "Zeros")
+
+df_combined %>%
+  summarise(across(all_of(response_vars), ~ mean(.x == "LOD", na.rm = T))) %>%
+  pivot_longer(cols = everything(), names_to = "Response", values_to = "LODs") %>%
+  left_join(zero, by = c("Response")) %>%
+  arrange(-LODs) %>%
+  gt() %>%
+  tab_header(title = "Proportions in each Response") %>%
+  fmt_number(columns = c(LODs), decimals = 4)
 ```
 
 As we can see, `nh4` and `no3` have a very high proportion of zero values (over 70%). `p` also has a substantial number of zeros. `ec` and `p_h` have no zeros. This confirms that standard linear models assuming normality will be inappropriate for the first three, but may be suitable for `ec` and `p_h`.
@@ -226,22 +240,21 @@ fit_no3 <- read_rds(here::here("models", "fit_no3.rds"))
 ```
 
 ```{r}
-summary(fit_no3)
+# summary(fit_no3)
 pp_check(fit_no3, ndraws = 100) + xlim(0, 100)
 ```
 
 ```{r}
 #| warning: false
+#| include: false
+#| eval: false
 
 conditional_effects(fit_no3, effects = "date:treatment")
 
-emm_treatments <- emmeans(fit_no3, ~ treatment, type = "response")
-emm_treatments
+emmeans(fit_no3, ~ date | treatment, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
 
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-
-emmip(fit_no3, ~ date | treatment, type = "response", CIs = T) + 
+emmip(fit_no3, ~ date | treatment, type = "response", CIs = T) +
   geom_point(data = lc_model_data,
              aes(x = date, y = no3, color = as.factor(no3_cens)),
              alpha = 0.7,
@@ -266,22 +279,21 @@ fit_nh4 <- read_rds(here::here("models", "fit_nh4.rds"))
 ```
 
 ```{r}
-summary(fit_nh4)
+# summary(fit_nh4)
 pp_check(fit_nh4, ndraws = 100) + xlim(0, 10)
 ```
 
 ```{r}
+#| include: false
 #| warning: false
+#| eval: false
 
 conditional_effects(fit_nh4, effects = "date:treatment")
 
-emm_treatments <- emmeans(fit_nh4, ~ treatment, type = "response")
-emm_treatments
+emmeans(fit_nh4, ~ date | treatment, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
 
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-
-emmip(fit_nh4, ~ date | treatment, type = "response", CIs = T) + 
+emmip(fit_nh4, ~ date | treatment, type = "response", CIs = T) +
   geom_point(data = lc_model_data,
              aes(x = date, y = nh4, color = as.factor(nh4_cens)),
              alpha = 0.7,
@@ -310,15 +322,13 @@ pp_check(fit_mg, ndraws = 100)
 ```
 
 ```{r}
+#| include: false
 #| warning: false
 
 conditional_effects(fit_mg, effects = "date:treatment")
 
-emm_treatments <- emmeans(fit_mg, ~ treatment, type = "response")
-emm_treatments
-
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
+emmeans(fit_mg, ~ date | treatment, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
 
 emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) + 
   geom_point(data = lc_model_data,
@@ -343,28 +353,27 @@ fit_p <- read_rds(here::here("models", "fit_p.rds"))
 ```
 
 ```{r}
-summary(fit_p)
+# summary(fit_p)
 pp_check(fit_p, ndraws = 100) + xlim(0, 1)
 ```
 
 ```{r}
 #| warning: false
+#| include: false
+#| eval: false
 
 conditional_effects(fit_p, effects = "date:treatment")
 
-emm_treatments <- emmeans(fit_p, ~ treatment, type = "response")
-emm_treatments
+emmeans(fit_p, ~ date | treatment, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
 
-pairs(emm_treatments)
-plot(emm_treatments) + theme_bw()
-
-emmip(fit_p, ~ date | treatment, type = "response", CIs = T) + 
+emmip(fit_p, ~ date | treatment, type = "response", CIs = T) +
   geom_point(data = lc_model_data,
              aes(x = date, y = p, color = as.factor(p_cens)),
              alpha = 0.7,
              position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
   ylim(0, 4) +
-  theme_bw()
+theme_bw()
 ```
 
 The phosphate model also shows signs of convergence issues. This is likely due to the combination of censored data and the complex interaction structure. The model fit, as seen in the `pp_check`, is reasonable but not perfect.
@@ -373,36 +382,77 @@ The phosphate model also shows signs of convergence issues. This is likely due t
 
 This approach models the data in two parts: a logistic regression for the probability of a zero vs. a non-zero value, and a separate model (e.g., Gamma or Lognormal) for the non-zero values. This is an alternative for `nh4`, `no3`, and `p`.
 
+```{r}
+#| include: false
+df_model <- df_combined_LOD_0 %>% filter(study_year == 1)
+```
+
+*Note: We are only modeling Study Year 1 for these models.*
+
 ### Zero-Inflated Model for Nitrate (`no3`)
 
 ```{r}
-df_model <- df_combined_LOD_0 %>% filter(study_year == 1)
-
 fit_no3_zi <- glmmTMB(
   no3 ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id),
   ziformula = ~treatment,
   data = df_model,
   family = glmmTMB::lognormal(link = "log")
 )
-summary(fit_no3_zi)
+# summary(fit_no3_zi)
 ```
 
 ```{r, fig.width=8, fig.height=4}
+#| include: false
+#| eval: false
+
 simulationOutput <- simulateResiduals(fittedModel = fit_no3_zi, n = 500)
 plot(simulationOutput)
 ```
 
 ```{r}
+#| include: false
+#| eval: false
+
+emmeans(fit_no3_zi, specs = ~ treatment | date, type = "response") %>%
+   cld(Letters = LETTERS, adjust = "tukey")
+
 pred_effects <- ggpredict(fit_no3_zi, terms = c("date", "treatment"))
-plot(pred_effects, colors = "flat") +
-  theme_bw() +
+pred_data <- as.data.frame(pred_effects)
+
+ggplot() +
+
+  geom_point(
+    data = df_model %>% mutate(group = treatment),
+    aes(x = date, y = no3),
+    alpha = 0.5,
+    color = "gray50",
+    position = position_jitter(width = 0.2, height = 0)
+  ) +
+
+   geom_ribbon(
+     data = pred_data,
+     aes(x = x, ymin = conf.low, ymax = conf.high, group = group),
+     alpha = 0.2,
+     fill = "cornflowerblue"
+   ) +
+
+  geom_line(
+    data = pred_data,
+    aes(x = x, y = predicted, group = group),
+    color = "cornflowerblue",
+    linewidth = 1
+  ) +
+
+  facet_wrap(~ group, scales = "free_y") +
+
   labs(
     x = "Date",
-    y = "Nitrate",
-    title = "Predicted Values of Nitrate",
-    color = "Treatment"
-  )
-# print(pred_effects)
+    y = "Nitrate (NO3) Concentration",
+    title = "Predicted Values of NO3, Faceted by Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(pred_effects)
 ```
 
 The warning about the non-positive-definite Hessian matrix indicates convergence problems, meaning the results may not be reliable. The `DHARMa` residual plots also show some some deviations, suggesting this model is not a great fit.
@@ -416,24 +466,58 @@ fit_nh4_zi <- glmmTMB(
   data = df_model,
   family = glmmTMB::lognormal(link = "log")
 )
-summary(fit_nh4_zi)
+# summary(fit_nh4_zi)
 ```
 
 ```{r, fig.width=8, fig.height=4}
+#| include: false
+#| eval: false
 simulationOutput <- simulateResiduals(fittedModel = fit_nh4_zi, n = 500)
 plot(simulationOutput)
 ```
 
 ```{r}
+#| eval: false
+
+emmeans(fit_nh4_zi, specs = ~ treatment | date, type = "response") %>%
+   cld(Letters = LETTERS, adjust = "tukey")
+
 pred_effects <- ggpredict(fit_nh4_zi, terms = c("date", "treatment"))
-plot(pred_effects, colors = "flat") + 
-  theme_bw() +
+pred_data <- as.data.frame(pred_effects)
+
+ggplot() +
+
+  geom_point(
+    data = df_model %>% mutate(group = treatment),
+    aes(x = date, y = nh4),
+    alpha = 0.5, 
+    color = "gray50", 
+    position = position_jitter(width = 0.2, height = 0) 
+  ) +
+
+  geom_ribbon(
+    data = pred_data,
+    aes(x = x, ymin = conf.low, ymax = conf.high, group = group),
+    alpha = 0.2,
+    fill = "cornflowerblue"
+  ) +
+
+  geom_line(
+    data = pred_data,
+    aes(x = x, y = predicted, group = group),
+    color = "cornflowerblue",
+    linewidth = 1
+  ) +
+
+  facet_wrap(~ group, scales = "free_y") +
+  
   labs(
     x = "Date",
-    y = "NH4",
-    title = "Predicted Values of NH4",
-    color = "Treatment"
-  )
+    y = "Ammonium (NH4) Concentration",
+    title = "Predicted Values of NH4, Faceted by Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 # print(pred_effects)
 ```
 
@@ -448,7 +532,8 @@ fit_p_zi <- glmmTMB(
   data = df_model,
   family = glmmTMB::lognormal(link = "log")
 )
-summary(fit_p_zi)
+
+Anova(fit_p_zi)
 ```
 
 ```{r, fig.width=8, fig.height=4}
@@ -457,15 +542,46 @@ plot(simulationOutput)
 ```
 
 ```{r}
+emmeans(fit_p_zi, specs = ~ treatment, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
+
 pred_effects <- ggpredict(fit_p_zi, terms = c("date", "treatment"))
-plot(pred_effects, colors = "flat") + 
-  theme_bw() +
+pred_data <- as.data.frame(pred_effects)
+
+ggplot() +
+
+  geom_point(
+    data = df_model %>% mutate(group = treatment),
+    aes(x = date, y = p),
+    alpha = 0.5, 
+    color = "gray50", 
+    position = position_jitter(width = 0.2, height = 0) 
+  ) +
+
+  geom_ribbon(
+    data = pred_data,
+    aes(x = x, ymin = conf.low, ymax = conf.high, group = group),
+    alpha = 0.2,
+    fill = "cornflowerblue"
+  ) +
+
+  geom_line(
+    data = pred_data,
+    aes(x = x, y = predicted, group = group),
+    color = "cornflowerblue",
+    linewidth = 1
+  ) +
+
+  facet_wrap(~ group, scales = "free_y") +
+  
   labs(
     x = "Date",
-    y = "P",
-    title = "Predicted Values of P",
-    color = "Treatment"
-  )
+    y = "Phosphate (P) Concentration",
+    title = "Predicted Values of P, Faceted by Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
 # print(pred_effects)
 ```
 
@@ -488,12 +604,18 @@ fit_lme_ph <- lme(
   na.action = na.exclude
 )
 
-S(fit_lme_ph)
+anova(fit_lme_ph)
 plot(fit_lme_ph)
 ```
 
 ```{r}
-emmip(fit_lme_ph, ~ date | treatment, type = "response", CIs = T) + 
+emmeans(fit_lme_ph, specs = ~ treatment) %>%
+  cld(Letters = LETTERS, adjust = "tukey")
+
+emmeans(fit_lme_ph, specs = ~ treatment | date) %>%
+  cld(Letters = LETTERS, adjust = "tukey")
+
+emmip(fit_lme_ph, ~ date | treatment, CIs = T) + 
   geom_point(data = df_model,
              aes(x = date, y = p_h, color = treatment),
              alpha = 0.2,
@@ -518,11 +640,14 @@ fit_ec_gamma <- glmer(
   na.action = na.exclude
 )
 
-S(fit_ec_gamma)
+Anova(fit_ec_gamma)
 plot(fit_ec_gamma)
 ```
 
 ```{r}
+emmeans(fit_ec_gamma, specs = ~ treatment | date, type = "response") %>%
+  cld(Letters = LETTERS, adjust = "tukey")
+
 emmip(fit_ec_gamma, ~ date | treatment, type = "response", CIs = T) + 
   geom_point(data = df_model,
              aes(x = date, y = ec, color = treatment),
@@ -542,3 +667,5 @@ The model converged without warnings. The diagnostic plots show randomly scatter
 
 - **Zero-Inflated Models are a Good Alternative:** The zero-inflated models (`glmmTMB`) also faced convergence issues.
     - **Recommendation:** Try simplifying the zero-inflated models. For instance, you could remove the interaction term (`treatment * date`) and use additive effects (`treatment + date`) to see if that helps with convergence.
+    
+- Since we did not find a good model fit for `nh4`, `no3`, and `p`, we suggest fitting a binomial GLMM where 1 = above LOD and 0 = below LOD since the convergence issues on our models may come from some combinations of treatment and date not having any non-LOD values.
