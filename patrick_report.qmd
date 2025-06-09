@@ -1,0 +1,544 @@
+---
+title: "Statistical Analysis of Soil Data"
+author: "Andrew Kerr"
+editor: source
+format: 
+  html:
+    toc: true
+    toc-depth: 4
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+---
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(writexl)
+library(patchwork)
+library(glmmTMB)
+library(car)
+library(emmeans)
+library(nlme)
+library(lmerTest)
+library(DHARMa)
+library(brms)
+library(ggeffects)
+library(RColorBrewer)
+library(gt)
+
+# Formatting for knitted file
+theme_set(theme_minimal())
+```
+
+```{r}
+#| message: false
+#| eval: false
+#| include: false
+
+# This code takes in your 3 csv files and combines them into a single excel file with 3 sheets
+
+df_combined <- read_csv(here::here("data", "Combined_Master.csv")) %>% clean_names()
+df_year_1 <- read_csv(here::here("data", "Year1_Master.csv")) %>% clean_names()
+df_year_2 <- read_csv(here::here("data", "Year2_Master.csv")) %>% clean_names()
+
+# Change date format
+df_combined <- df_combined %>%
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
+
+df_year_1 <- df_year_1 %>%
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
+
+df_year_2 <- df_year_2 %>%
+  mutate(date = as.Date(date, format="%m_%d_%y")) %>%
+  select(-starts_with("x"))
+
+# Save as single Excel File
+out <- list("combined" = df_combined, "year_1" = df_year_1, "year_2" = df_year_2)
+write_xlsx(out, "data/Master.xlsx")
+```
+
+## Introduction and Data Preparation
+
+Here, we are loading the data and preparing it for analysis. This includes cleaning the column names, converting data types, and creating new variables that will be useful for modeling.
+
+### Data Read-in
+
+This section reads in the data from the master Excel file. We'll be working with the combined dataset for the analyses.
+
+```{r}
+# Read in the data from the Excel file
+df_combined <- read_xlsx(here::here("data", "Master.xlsx"), sheet = "combined")
+
+# Convert relevant columns to factors for modeling
+df_combined <- df_combined %>%
+  mutate(
+    sample_id = as.factor(sample_id),
+    treatment = as.factor(treatment),
+    site = as.factor(site),
+    block = as.factor(block),
+    study_year = as.factor(study_year)
+  )
+
+# Define the response variables we'll be analyzing
+response_vars <- c("nh4", "no3", "mg", "p", "ec", "p_h")
+```
+
+### Handling Values Below the Limit of Detection (LOD)
+
+A common challenge in environmental data is dealing with measurements that are below the limit of detection (LOD). These are recorded as "LOD" in the dataset. We will explore two common approaches to handle these values:
+
+1.  **Treating LOD as Censored Data:** This is a more statistically robust approach. It acknowledges that the true value is somewhere between 0 and the LOD, rather than assuming it is exactly 0.
+
+2.  **Replacing LOD with 0:** This is a simple approach, but it can bias the results, especially if there are many LOD values.
+
+Here, we create two datasets to reflect these two approaches.
+
+```{r}
+#| warning: false
+
+# Create a dataset where LOD is replaced with 0
+df_combined_LOD_0 <- df_combined %>%
+  mutate(across(
+    all_of(response_vars),
+    ~ as.numeric(ifelse(.x == "LOD", 0, .x))
+  ),
+  
+    date = as.factor(date),
+    # Create combined grouping factors
+    site_block_id = interaction(site, block, drop = TRUE),
+    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
+  )
+
+# Create a dataset for censored models
+# A 'censored' column is added for each response variable.
+# The actual response variable is set to a placeholder (e.g., the detection limit) when censored.
+lc_model_data <- df_combined %>%
+  mutate(
+    nh4_cens = ifelse(nh4 == "LOD", -1, 0),
+    no3_cens = ifelse(no3 == "LOD", -1, 0),
+    mg_cens = ifelse(mg == "LOD", -1, 0),
+    p_cens = ifelse(p == "LOD", -1, 0),
+    
+    nh4 = ifelse(nh4 == "LOD", nh4_lod, as.numeric(nh4)),
+    no3 = ifelse(no3 == "LOD", n03_lod, as.numeric(no3)),
+    mg = ifelse(mg == "LOD", mg_lod, as.numeric(mg)),
+    p = ifelse(p == "LOD", p_lod, as.numeric(p)),
+
+    date = as.factor(date),
+    # Create combined grouping factors
+    site_block_id = interaction(site, block, drop = TRUE),
+    trt_site_block_id = interaction(treatment, site, block, drop = TRUE)
+  )
+```
+
+Depending on which method we use, the models answer slightly different research questions. 
+
+#### Treating LOD as 0
+
+- **Assumption**: You are assuming that any measurement below the Limit of Detection (LOD) is a true zero. You're stating that the response is completely absent from that sample.
+
+- **Research Question(s) it Answers**: This approach, especially with a zero-inflated model, splits your research question into two parts:
+
+  1. Presence/Absence: Does the treatment affect the probability that the response is completely absent (i.e., a "true zero")?
+
+  2. Concentration when Present: If the response is present (i.e., not a zero), how does the treatment affect its concentration?
+
+- **Downside**: This is a very strong and often incorrect assumption. In most environmental systems, a value below the LOD doesn't mean the response is completely absent, just that its concentration is too low for your equipment to measure accurately. By substituting zero, you are artificially deflating the mean and variance of your data, which can bias your results and lead you to **underestimate the true average concentration**.
+
+#### Treating LOD as Left-Censored
+
+- **Assumption**: You assume that a value below the LOD is not a known value, only that its true concentration is somewhere between 0 and the detection limit. The model doesn't force it to be zero; it incorporates this uncertainty into the analysis.
+
+- **Research Question(s) it Answers**: This approach answers a single, more direct question: How does the treatment affect the true underlying concentration of the response, while properly accounting for the limitations and uncertainty of the measurement instrument?
+
+- **Advantage**: It doesn't "invent" data by substituting zero. Instead, it uses all the information you have (i.e., "we know it's less than X") to provide a less biased and more accurate estimate of the treatment effects on the actual response concentrations.
+
+### Exploratory Data Analysis
+
+Before we build our models, it's important to explore the data to understand its structure and identify any patterns or issues.
+
+#### Proportion of Zero/LOD Values
+
+Here, we'll look at the proportion of zeros (after converting LOD to 0) for each response variable. This will help us understand the extent of the "zero problem".
+
+```{r}
+# Calculate the proportion of zeros for each response variable
+df_combined_LOD_0 %>%
+  select(all_of(response_vars)) %>%
+  map_df(~ mean(.x == 0, na.rm = TRUE)) %>%
+  pivot_longer(everything(), names_to = "Response", values_to = "Proportion of Zeros") %>%
+  arrange(-`Proportion of Zeros`)
+```
+
+As we can see, `nh4` and `no3` have a very high proportion of zero values (over 70%). `p` also has a substantial number of zeros. `ec` and `p_h` have no zeros. This confirms that standard linear models assuming normality will be inappropriate for the first three, but may be suitable for `ec` and `p_h`.
+
+#### Visualizing the Data
+
+Boxplots show the distribution of the *non-zero* data to reveal potential differences between treatments.
+
+```{r, fig.width=10, fig.height=8}
+# Function to create boxplots for each response variable
+plot_concentration <- function(r, data) {
+  data %>%
+    filter(.data[[r]] > 0) %>% # We only plot non-zero values for clarity
+    ggplot(aes(x = treatment, y = .data[[r]], fill = treatment)) +
+    geom_boxplot(alpha = 0.7) +
+    geom_point(alpha = 0.3) +
+    facet_wrap(vars(study_year), scales = "free") +
+    labs(
+      title = paste(tools::toTitleCase(r), "Concentration (Non-Zero) by Treatment"),
+      x = "Treatment",
+      y = "Value",
+      fill = "Treatment"
+    ) +
+    theme_bw()
+}
+
+# Create and display the plots
+plots_0 <- map(response_vars, plot_concentration, data = df_combined_LOD_0)
+wrap_plots(plots_0, ncol = 2, guides = "collect")
+```
+
+## Modeling Approach 1: Censored Models for Data with LODs (`brms`)
+
+This is a statistically robust approach for `nh4`, `no3`, `mg`, and `p`. It accounts for the fact that LOD values are not true zeros but are values below a certain threshold. We use the `brms` package for Bayesian modeling.
+
+*Note: Bayesian models are computationally intensive and can take a long time to run. For this report, we are loading pre-fitted model objects.*
+
+### Censored Model for Nitrate (`no3`)
+
+```{r}
+# fit_no3 <- brm(
+#   bf(no3 | cens(no3_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
+#   data = lc_model_data, family = Gamma(link = "log"),
+#   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
+#   file = "models/fit_no3"
+# )
+fit_no3 <- read_rds(here::here("models", "fit_no3.rds"))
+```
+
+```{r}
+summary(fit_no3)
+pp_check(fit_no3, ndraws = 100) + xlim(0, 100)
+```
+
+```{r}
+#| warning: false
+
+conditional_effects(fit_no3, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_no3, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_no3, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = no3, color = as.factor(no3_cens)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  ylim(0, 1000) +
+  theme_bw()
+```
+
+The `cens(no3_cens)` term tells `brms` to treat the data as left-censored. The model summary shows the estimated effects. The `pp_check` plot shows the model fits the overall distribution reasonably well, though the many warnings about divergent transitions indicate potential convergence problems. The results should be interpreted with caution.
+
+
+### Censored Model for Ammonium (`nh4`)
+
+```{r}
+# fit_nh4 <- brm(
+#   bf(nh4 | cens(nh4_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
+#   data = lc_model_data, family = Gamma(link = "log"),
+#   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
+#   file = "models/fit_no3"
+# )
+fit_nh4 <- read_rds(here::here("models", "fit_nh4.rds"))
+```
+
+```{r}
+summary(fit_nh4)
+pp_check(fit_nh4, ndraws = 100) + xlim(0, 10)
+```
+
+```{r}
+#| warning: false
+
+conditional_effects(fit_nh4, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_nh4, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_nh4, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = nh4, color = as.factor(nh4_cens)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  ylim(0, 10) +
+  theme_bw()
+```
+
+Similar to the nitrate model, the `nh4` model shows many divergent transitions, which is a red flag for model reliability. The posterior predictive check (`pp_check`) suggests the model struggles to capture the shape of the data perfectly, which is common with highly zero-inflated datasets.
+
+### Censored Model for Magnesium (`mg`)
+
+```{r}
+# fit_mg <- brm(
+#   bf(mg | cens(mg_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id)),
+#   data = lc_model_data, family = Gamma(link = "log"),
+#   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
+#   file = "models/fit_mg"
+# )
+fit_mg <- read_rds(here::here("models", "fit_mg.rds"))
+```
+
+```{r}
+summary(fit_mg)
+pp_check(fit_mg, ndraws = 100)
+```
+
+```{r}
+#| warning: false
+
+conditional_effects(fit_mg, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_mg, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = mg, color = as.factor(mg_cens)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+The `mg` model appears to have converged much better than the `nh4` and `no3` models, with few warnings. The `pp_check` shows a good fit between the model's predictions and the observed data. This suggests the censored Gamma model is a good choice for `mg`.
+
+### Censored Model for Phosphate (`p`)
+
+```{r}
+# fit_p <- brm(
+#   bf(p | cens(p_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id)),
+#   data = lc_model_data, family = Gamma(link = "log"),
+#   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
+#   file = "models/fit_p"
+# )
+fit_p <- read_rds(here::here("models", "fit_p.rds"))
+```
+
+```{r}
+summary(fit_p)
+pp_check(fit_p, ndraws = 100) + xlim(0, 1)
+```
+
+```{r}
+#| warning: false
+
+conditional_effects(fit_p, effects = "date:treatment")
+
+emm_treatments <- emmeans(fit_p, ~ treatment, type = "response")
+emm_treatments
+
+pairs(emm_treatments)
+plot(emm_treatments) + theme_bw()
+
+emmip(fit_p, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = lc_model_data,
+             aes(x = date, y = p, color = as.factor(p_cens)),
+             alpha = 0.7,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  ylim(0, 4) +
+  theme_bw()
+```
+
+The phosphate model also shows signs of convergence issues. This is likely due to the combination of censored data and the complex interaction structure. The model fit, as seen in the `pp_check`, is reasonable but not perfect.
+
+## Modeling Approach 2: Zero-Inflated Models (`glmmTMB`)
+
+This approach models the data in two parts: a logistic regression for the probability of a zero vs. a non-zero value, and a separate model (e.g., Gamma or Lognormal) for the non-zero values. This is an alternative for `nh4`, `no3`, and `p`.
+
+### Zero-Inflated Model for Nitrate (`no3`)
+
+```{r}
+df_model <- df_combined_LOD_0 %>% filter(study_year == 1)
+
+fit_no3_zi <- glmmTMB(
+  no3 ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id),
+  ziformula = ~treatment,
+  data = df_model,
+  family = glmmTMB::lognormal(link = "log")
+)
+summary(fit_no3_zi)
+```
+
+```{r, fig.width=8, fig.height=4}
+simulationOutput <- simulateResiduals(fittedModel = fit_no3_zi, n = 500)
+plot(simulationOutput)
+```
+
+```{r}
+pred_effects <- ggpredict(fit_no3_zi, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") +
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "Nitrate",
+    title = "Predicted Values of Nitrate",
+    color = "Treatment"
+  )
+# print(pred_effects)
+```
+
+The warning about the non-positive-definite Hessian matrix indicates convergence problems, meaning the results may not be reliable. The `DHARMa` residual plots also show some some deviations, suggesting this model is not a great fit.
+
+### Zero-Inflated Model for Ammonium (`nh4`)
+
+```{r}
+fit_nh4_zi <- glmmTMB(
+  nh4 ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id),
+  ziformula = ~treatment,
+  data = df_model,
+  family = glmmTMB::lognormal(link = "log")
+)
+summary(fit_nh4_zi)
+```
+
+```{r, fig.width=8, fig.height=4}
+simulationOutput <- simulateResiduals(fittedModel = fit_nh4_zi, n = 500)
+plot(simulationOutput)
+```
+
+```{r}
+pred_effects <- ggpredict(fit_nh4_zi, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") + 
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "NH4",
+    title = "Predicted Values of NH4",
+    color = "Treatment"
+  )
+# print(pred_effects)
+```
+
+Similar to the nitrate model, the zero-inflated model for `nh4` fails to converge properly. The DHARMa diagnostics, however, look slightly better than for nitrate. Still, the convergence failure is a major issue.
+
+### Zero-Inflated Model for Phosphate (`p`)
+
+```{r}
+fit_p_zi <- glmmTMB(
+  p ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id),
+  ziformula = ~treatment,
+  data = df_model,
+  family = glmmTMB::lognormal(link = "log")
+)
+summary(fit_p_zi)
+```
+
+```{r, fig.width=8, fig.height=4}
+simulationOutput <- simulateResiduals(fittedModel = fit_p_zi, n = 500)
+plot(simulationOutput)
+```
+
+```{r}
+pred_effects <- ggpredict(fit_p_zi, terms = c("date", "treatment"))
+plot(pred_effects, colors = "flat") + 
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "P",
+    title = "Predicted Values of P",
+    color = "Treatment"
+  )
+# print(pred_effects)
+```
+
+The zero-inflated model for `p` converges properly, and the DHARMa diagnostics show some deviations, suggesting this model may not be a good fit.
+
+## Models for Data with No LODs (`p_h` and `ec`)
+
+For variables like pH and EC that do not have a zero-inflation problem, we can use more standard generalized linear mixed models.
+
+### Model for pH (`p_h`)
+
+```{r}
+fit_lme_ph <- lme(
+  fixed = p_h ~ as.factor(date) * treatment,
+  random = list(
+    site_block_id = ~ 1, # Random intercept for site:block combinations
+    trt_site_block_id = ~ 1 # Random intercept for treatment:site:block combinations
+  ),
+  data = df_model,
+  na.action = na.exclude
+)
+
+S(fit_lme_ph)
+plot(fit_lme_ph)
+```
+
+```{r}
+emmip(fit_lme_ph, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = df_model,
+             aes(x = date, y = p_h, color = treatment),
+             alpha = 0.2,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+The model summary shows significant effects of treatment. The diagnostic plots show randomly scattered residuals, suggesting the model assumptions are met and this is a reliable model.
+
+### Model for EC (`ec`)
+
+The residuals for the GLMM for EC showed fanning, therefore a Gamma GLMM is more appropriate than a standard linear model.
+
+```{r}
+fit_ec_gamma <- glmer(
+  ec ~ date * treatment +
+    (1 | site_block_id) +
+    (1 | trt_site_block_id),
+  data = df_model,
+  family = Gamma(link = "log"),
+  control = glmerControl(optimizer = "bobyqa"), # default optimizer did not converge
+  na.action = na.exclude
+)
+
+S(fit_ec_gamma)
+plot(fit_ec_gamma)
+```
+
+```{r}
+emmip(fit_ec_gamma, ~ date | treatment, type = "response", CIs = T) + 
+  geom_point(data = df_model,
+             aes(x = date, y = ec, color = treatment),
+             alpha = 0.2,
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.1)) +
+  theme_bw()
+```
+
+The model converged without warnings. The diagnostic plots show randomly scattered residuals, suggesting the model assumptions are met and this is a reliable model.
+
+## Summary and Recommendations
+
+- **Models for `p_h` and `ec`:** For pH (`p_h`) and EC (`ec`), the standard linear mixed model and Gamma GLMM, respectively, fit the data well, converged without issues, and passed diagnostic checks.
+
+-  **Censored Models are Promising:** The Bayesian censored models (`brms`) are theoretically the most robust approach for the data with LODs. The `mg` model worked very well. However, the models for `nh4`, `no3`, and `p` struggled to converge.
+    - **Recommendation:** For the `brms` models that had issues, I suggest increasing the number of iterations (e.g., `iter = 6000`, `warmup = 2000`) and perhaps trying a more informative prior distribution (currently brms is selecting this for us) if you have prior knowledge about the parameters. This may help the models converge.
+
+- **Zero-Inflated Models are a Good Alternative:** The zero-inflated models (`glmmTMB`) also faced convergence issues.
+    - **Recommendation:** Try simplifying the zero-inflated models. For instance, you could remove the interaction term (`treatment * date`) and use additive effects (`treatment + date`) to see if that helps with convergence.
