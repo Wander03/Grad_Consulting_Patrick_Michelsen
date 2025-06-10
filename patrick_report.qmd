@@ -265,7 +265,8 @@ This is a statistically robust approach for `nh4`, `no3`, `mg`, and `p`. It acco
 #   bf(no3 | cens(no3_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
 #   data = lc_model_data, family = Gamma(link = "log"),
 #   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
-#   file = "models/fit_no3"
+#   file = here::here("models", "fit_no3"),
+#   file_refit = getOption("brms.file_refit", "on_change")
 # )
 fit_no3 <- read_rds(here::here("models", "fit_no3.rds"))
 ```
@@ -304,7 +305,8 @@ The `cens(no3_cens)` term tells `brms` to treat the data as left-censored. The m
 #   bf(nh4 | cens(nh4_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
 #   data = lc_model_data, family = Gamma(link = "log"),
 #   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
-#   file = "models/fit_no3"
+#   file = here::here("models", "fit_nh4"),
+#   file_refit = getOption("brms.file_refit", "on_change")
 # )
 fit_nh4 <- read_rds(here::here("models", "fit_nh4.rds"))
 ```
@@ -339,10 +341,11 @@ Similar to the nitrate model, the `nh4` model shows many divergent transitions, 
 
 ```{r}
 # fit_mg <- brm(
-#   bf(mg | cens(mg_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id)),
+#   bf(mg | cens(mg_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
 #   data = lc_model_data, family = Gamma(link = "log"),
 #   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
-#   file = "models/fit_mg"
+#   file = here::here("models", "fit_mg"),
+#   file_refit = getOption("brms.file_refit", "on_change")
 # )
 fit_mg <- read_rds(here::here("models", "fit_mg.rds"))
 ```
@@ -373,17 +376,25 @@ The `mg` model appears to have converged much better than the `nh4` and `no3` mo
 ### Censored Model for Phosphate (`p`)
 
 ```{r}
+# fit_p <- brm(
+#   bf(p | cens(p_cens) ~ treatment * date + (1 | site_block_id) + (1 | trt_site_block_id)),
+#   data = lc_model_data, family = Gamma(link = "log"),
+#   iter = 10000, warmup = 2000, chains = 4, cores = 4, seed = 12345,
+#   file = here::here("models", "fit_p"),
+#   file_refit = getOption("brms.file_refit", "on_change")
+# )
 fit_p <- brm(
-  bf(p | cens(p_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id),
+  bf(p | cens(p_cens) ~ treatment + date + (1 | site_block_id) + (1 | trt_site_block_id)),
   data = lc_model_data, family = Gamma(link = "log"),
-  iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
-  file = "models/fit_p"
+  iter = 10000, warmup = 2000, chains = 4, cores = 4, seed = 12345,
+  file = here::here("models", "fit_p_2"),
+  file_refit = getOption("brms.file_refit", "on_change")
 )
 fit_p <- read_rds(here::here("models", "fit_p.rds"))
 ```
 
 ```{r}
-# summary(fit_p)
+summary(fit_p)
 pp_check(fit_p, ndraws = 100) + xlim(0, 1)
 ```
 
