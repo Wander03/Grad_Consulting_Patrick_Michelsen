@@ -182,14 +182,19 @@ zero <- df_combined %>%
   summarise(across(all_of(response_vars), ~ mean(.x == "0", na.rm = T))) %>%
   pivot_longer(cols = everything(), names_to = "Response", values_to = "Zeros")
 
+missing <- df_combined %>%
+  summarise(across(all_of(response_vars), ~ mean(is.na(.x)))) %>%
+  pivot_longer(cols = everything(), names_to = "Response", values_to = "Missing")
+
 df_combined %>%
   summarise(across(all_of(response_vars), ~ mean(.x == "LOD", na.rm = T))) %>%
   pivot_longer(cols = everything(), names_to = "Response", values_to = "LODs") %>%
   left_join(zero, by = c("Response")) %>%
+  left_join(missing, by = c("Response")) %>%
   arrange(-LODs) %>%
   gt() %>%
   tab_header(title = "Proportions in each Response") %>%
-  fmt_number(columns = c(LODs), decimals = 4)
+  fmt_number(columns = c(LODs, Missing), decimals = 4)
 ```
 
 ```{r, fig.width=20, fig.height=14}
@@ -348,12 +353,11 @@ pp_check(fit_mg, ndraws = 100)
 ```
 
 ```{r}
-#| include: false
 #| warning: false
 
-conditional_effects(fit_mg, effects = "date:treatment")
+conditional_effects(fit_mg, effects = "treatment")
 
-emmeans(fit_mg, ~ date | treatment, type = "response") %>%
+emmeans(fit_mg, ~ treatment, type = "response") %>%
   cld(Letters = LETTERS, adjust = "tukey")
 
 emmip(fit_mg, ~ date | treatment, type = "response", CIs = T) + 
@@ -369,12 +373,12 @@ The `mg` model appears to have converged much better than the `nh4` and `no3` mo
 ### Censored Model for Phosphate (`p`)
 
 ```{r}
-# fit_p <- brm(
-#   bf(p | cens(p_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id)),
-#   data = lc_model_data, family = Gamma(link = "log"),
-#   iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
-#   file = "models/fit_p"
-# )
+fit_p <- brm(
+  bf(p | cens(p_cens) ~ treatment * date + (1 | site_block_id)) + (1 | trt_site_block_id),
+  data = lc_model_data, family = Gamma(link = "log"),
+  iter = 4000, warmup = 1000, chains = 4, cores = 4, seed = 12345,
+  file = "models/fit_p"
+)
 fit_p <- read_rds(here::here("models", "fit_p.rds"))
 ```
 
@@ -671,7 +675,7 @@ plot(fit_ec_gamma)
 ```
 
 ```{r}
-emmeans(fit_ec_gamma, specs = ~ treatment | date, type = "response") %>%
+emmeans(fit_ec_gamma, specs = ~ treatment, type = "response") %>%
   cld(Letters = LETTERS, adjust = "tukey")
 
 emmip(fit_ec_gamma, ~ date | treatment, type = "response", CIs = T) + 
@@ -693,5 +697,7 @@ The model converged without warnings. The diagnostic plots show randomly scatter
 
 - **Zero-Inflated Models are a Good Alternative:** The zero-inflated models (`glmmTMB`) also faced convergence issues.
     - **Recommendation:** Try simplifying the zero-inflated models. For instance, you could remove the interaction term (`treatment * date`) and use additive effects (`treatment + date`) to see if that helps with convergence.
+    
+    - Change `ziformula = ~date`
     
 - Since we did not find a good model fit for `nh4`, `no3`, and `p`, we suggest fitting a binomial GLMM where 1 = above LOD and 0 = below LOD since the convergence issues on our models may come from some combinations of treatment and date not having any non-LOD values.
