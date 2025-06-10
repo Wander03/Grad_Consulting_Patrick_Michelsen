@@ -192,6 +192,32 @@ df_combined %>%
   fmt_number(columns = c(LODs), decimals = 4)
 ```
 
+```{r, fig.width=20, fig.height=14}
+#| echo: false
+#| message: false
+
+response_vars_2 <- c("nh4", "no3", "mg", "p")
+
+df_combined %>%
+  pivot_longer(cols = all_of(response_vars_2),
+               names_to = "var",
+               values_to = "value") %>%
+  group_by(treatment, date, var) %>%
+  summarise(proportion_lod = mean(value == "LOD", na.rm = TRUE)) %>%
+  ggplot(aes(x = treatment, y = proportion_lod)) +
+  geom_col(aes(fill = proportion_lod == 1), width = 0.7) +
+  scale_fill_manual(values = c("FALSE" = "lightgreen", "TRUE" = "firebrick"),
+                   name = "100% at LOD") +
+  scale_y_continuous(labels = scales::percent) +
+  facet_wrap(~ var + date, ncol = length(unique(df_combined$date))) +
+  labs(title = "LOD Proportions by Treatment",
+       x = "Treatment",
+       y = "Percentage at LOD") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 14))
+```
+
 As we can see, `nh4` and `no3` have a very high proportion of zero values (over 70%). `p` also has a substantial number of zeros. `ec` and `p_h` have no zeros. This confirms that standard linear models assuming normality will be inappropriate for the first three, but may be suitable for `ec` and `p_h`.
 
 #### Visualizing the Data
